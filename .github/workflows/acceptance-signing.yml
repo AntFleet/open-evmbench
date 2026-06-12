@@ -1,0 +1,184 @@
+# Acceptance signing (SPEC §5): maintainer-triggered after PR checks pass.
+# Submission PRs are data-only. The private signing key is available only
+# after the prepare allowlist has identified exactly one submission directory.
+name: acceptance-signing
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Submission PR number to accept and sign"
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      package_dir: ${{ steps.allowlist.outputs.package_dir }}
+      record_path: ${{ steps.allowlist.outputs.record_path }}
+      changed_files: ${{ steps.allowlist.outputs.changed_files }}
+      pr_author: ${{ steps.pr.outputs.author }}
+      pr_author_id: ${{ steps.pr.outputs.author_id }}
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+      head_ref: ${{ steps.pr.outputs.head_ref }}
+      base_ref: ${{ steps.pr.outputs.base_ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: pr
+        name: Read PR metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          meta="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+          printf 'author=%s\n' "$(printf '%s' "$meta" | jq -r '.user.login')" >> "$GITHUB_OUTPUT"
+          printf 'author_id=%s\n' "$(printf '%s' "$meta" | jq -r '.user.id')" >> "$GITHUB_OUTPUT"
+          printf 'head_sha=%s\n' "$(printf '%s' "$meta" | jq -r '.head.sha')" >> "$GITHUB_OUTPUT"
+          printf 'head_ref=%s\n' "$(printf '%s' "$meta" | jq -r '.head.ref')" >> "$GITHUB_OUTPUT"
+          printf 'base_ref=%s\n' "$(printf '%s' "$meta" | jq -r '.base.ref')" >> "$GITHUB_OUTPUT"
+      - name: Check out PR head for untrusted diff inspection
+        env:
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$HEAD_SHA"
+          git checkout "$HEAD_SHA"
+      - id: allowlist
+        name: Enforce submission-only PR diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          changed="$(gh pr view "$PR_NUMBER" --json files --jq '.files[].path')"
+          if [ -z "$changed" ]; then
+            echo "pr-touches-non-submission-files: PR contains no changed submission files" >&2
+            exit 1
+          fi
+          package_dir=""
+          record_path=""
+          while IFS= read -r path; do
+            case "$path" in
+              *..*|/*)
+                echo "pr-touches-non-submission-files: path escapes submission directory: $path" >&2
+                exit 1
+                ;;
+            esac
+            if [[ ! "$path" =~ ^submissions/phase1/[A-Za-z0-9][A-Za-z0-9-]{0,38}/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/.+$ ]]; then
+              echo "pr-touches-non-submission-files: submission PRs may only modify their own submission directory ($path)" >&2
+              exit 1
+            fi
+            dir="$(printf '%s\n' "$path" | cut -d/ -f1-4)"
+            if [ -n "$package_dir" ] && [ "$package_dir" != "$dir" ]; then
+              echo "pr-touches-non-submission-files: PR touches multiple submission directories" >&2
+              exit 1
+            fi
+            package_dir="$dir"
+            if [ "$path" = "$dir/record.json" ]; then
+              record_path="$path"
+            fi
+          done <<< "$changed"
+          if [ -z "$record_path" ]; then
+            echo "pr-touches-non-submission-files: submission PR must include record.json" >&2
+            exit 1
+          fi
+          {
+            printf 'package_dir=%s\n' "$package_dir"
+            printf 'record_path=%s\n' "$record_path"
+            printf 'changed_files<<EOF\n%s\nEOF\n' "$changed"
+          } >> "$GITHUB_OUTPUT"
+
+  validate:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.base_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Overlay allowlisted submission directory
+        env:
+          HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+          PACKAGE_DIR: ${{ needs.prepare.outputs.package_dir }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$HEAD_SHA"
+          git checkout "$HEAD_SHA" -- "$PACKAGE_DIR"
+      - name: Fetch pinned upstream dataset
+        run: python -c "from openevmbench.upstream import ensure_upstream; ensure_upstream()"
+      - name: Re-run checks with trusted base code
+        env:
+          CHANGED_FILES: ${{ needs.prepare.outputs.changed_files }}
+          PR_AUTHOR: ${{ needs.prepare.outputs.pr_author }}
+          PR_AUTHOR_ID: ${{ needs.prepare.outputs.pr_author_id }}
+        run: |
+          python -m openevmbench.cli check-pr \
+            --changed-files "$CHANGED_FILES" \
+            --pr-author "$PR_AUTHOR" \
+            --pr-author-id "$PR_AUTHOR_ID"
+
+  act:
+    needs: [prepare, validate]
+    runs-on: ubuntu-latest
+    environment: acceptance-signing
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.base_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install trusted runtime dependencies
+        run: python -m pip install cryptography jsonschema pyyaml
+      - name: Overlay allowlisted submission directory
+        env:
+          HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+          PACKAGE_DIR: ${{ needs.prepare.outputs.package_dir }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$HEAD_SHA"
+          git checkout "$HEAD_SHA" -- "$PACKAGE_DIR"
+      - name: Sign accepted record with trusted base code
+        env:
+          ANTFLEET_PRIVATE_KEY_PEM: ${{ secrets.ANTFLEET_PRIVATE_KEY_PEM }}
+          RECORD_PATH: ${{ needs.prepare.outputs.record_path }}
+          PACKAGE_DIR: ${{ needs.prepare.outputs.package_dir }}
+        run: |
+          set -euo pipefail
+          case "$RECORD_PATH" in
+            "$PACKAGE_DIR"/record.json) ;;
+            *)
+              echo "pr-touches-non-submission-files: resolved record path is outside package dir" >&2
+              exit 1
+              ;;
+          esac
+          PYTHONPATH="$PWD" python -m openevmbench.cli admin accept --record "$RECORD_PATH"
+          PYTHONPATH="$PWD" python -m openevmbench.cli verify --record "$RECORD_PATH"
+      - name: Push accepted record to PR branch
+        env:
+          HEAD_REF: ${{ needs.prepare.outputs.head_ref }}
+          RECORD_PATH: ${{ needs.prepare.outputs.record_path }}
+        run: |
+          set -euo pipefail
+          git config user.name "antfleet-acceptance[bot]"
+          git config user.email "acceptance@antfleet.dev"
+          git add "$RECORD_PATH"
+          git commit -m "Accept and sign submission (AntFleet acceptance)"
+          git push origin "HEAD:$HEAD_REF"

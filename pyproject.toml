@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openevmbench"
+version = "1.0.0.dev0"
+description = "Open EVMBench harness wrapper, submission schema, and signing utilities (Phase 1 Detect)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+    "cryptography>=42.0",
+    "rfc8785>=0.1.4",
+    "jsonschema>=4.21",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+openevmbench = "openevmbench.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["openevmbench*"]
+
+[tool.setuptools.package-data]
+openevmbench = ["schemas/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

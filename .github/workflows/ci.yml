@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 3.11 exercises the uuid7 fallback; 3.14 the native uuid.uuid7 path.
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e .[dev]
+      # Upstream-cache tests skip in CI (the pinned dataset is fetched locally,
+      # see docs/UPSTREAM_PIN.md); schema/signing/judge/fixture tests all run.
+      - run: python -m pytest -q
+      - name: Verify vendored judge prompt hash
+        run: |
+          python - <<'EOF'
+          import hashlib, pathlib, sys
+          sys.path.insert(0, ".")
+          from openevmbench.constants import JUDGE_PROMPT_SHA256
+          actual = hashlib.sha256(pathlib.Path("harness/judge_prompt_v1.md").read_bytes()).hexdigest()
+          assert actual == JUDGE_PROMPT_SHA256, f"pinned prompt drift: {actual}"
+          print("judge prompt pin OK")
+          EOF

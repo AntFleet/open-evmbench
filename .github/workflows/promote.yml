@@ -1,0 +1,55 @@
+# Promotion (SPEC §4/§5): after an accepted submission merges to main,
+# write promoted_at + promoted_commit_sha in a follow-up commit.
+# promoted_commit_sha is the merge commit that landed the accepted record;
+# this follow-up metadata commit references it.
+name: promote
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "submissions/**/record.json"
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Promote accepted records
+        run: |
+          python - <<'EOF'
+          import json, pathlib, subprocess
+          from openevmbench.signing import verify_record
+          commit = "${{ github.sha }}"
+          public_pem = pathlib.Path("antfleet.public_key.pem").read_bytes()
+          promoted = []
+          for record_path in pathlib.Path("submissions").rglob("record.json"):
+              record = json.loads(record_path.read_text())
+              if record.get("state") == "accepted":
+                  verify_record(record, public_pem)
+                  subprocess.run(
+                      ["python", "-m", "openevmbench.cli", "admin", "promote",
+                       "--record", str(record_path), "--commit", commit],
+                      check=True,
+                  )
+                  promoted.append(str(record_path))
+          pathlib.Path("promoted.txt").write_text("\n".join(promoted))
+          EOF
+      - name: Commit promotion metadata
+        run: |
+          if [ -s promoted.txt ]; then
+            git config user.name "antfleet-acceptance[bot]"
+            git config user.email "acceptance@antfleet.dev"
+            git add submissions/
+            git commit -m "Promote accepted submission(s) into the public log"
+            git push
+          else
+            echo "no accepted records awaiting promotion"
+          fi

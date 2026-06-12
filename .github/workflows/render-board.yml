@@ -1,0 +1,54 @@
+# Rebuild and publish the static leaderboard whenever the public log changes.
+name: render-board
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "submissions/**"
+      - "leaderboard/board_config.json"
+      - "openevmbench/board.py"
+      - "openevmbench/render.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Render site
+        run: |
+          python -m openevmbench.cli board --out _site
+          # ship the promoted records so record links resolve
+          mkdir -p _site/submissions
+          cp -aP submissions/. _site/submissions/ 2>/dev/null || true
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+  deploy:
+    needs: render
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

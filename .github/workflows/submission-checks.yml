@@ -1,0 +1,109 @@
+# Automated PR checks for submission PRs (SPEC §5 review stages).
+# Submission PRs are data-only: checks run trusted base code and copy in
+# only one allowlisted submissions/phase1/<handle>/<submission_id>/ directory.
+name: submission-checks
+
+on:
+  pull_request:
+    paths:
+      - "submissions/**"
+
+permissions: {}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      package_dir: ${{ steps.allowlist.outputs.package_dir }}
+      changed_files: ${{ steps.allowlist.outputs.changed_files }}
+      pr_author: ${{ steps.pr.outputs.author }}
+      pr_author_id: ${{ steps.pr.outputs.author_id }}
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+      base_ref: ${{ steps.pr.outputs.base_ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - id: pr
+        name: Read PR metadata
+        env:
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          printf 'author=%s\n' "$AUTHOR" >> "$GITHUB_OUTPUT"
+          printf 'author_id=%s\n' "$AUTHOR_ID" >> "$GITHUB_OUTPUT"
+          printf 'head_sha=%s\n' "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          printf 'base_ref=%s\n' "$BASE_REF" >> "$GITHUB_OUTPUT"
+      - id: allowlist
+        name: Enforce submission-only PR diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"
+          if [ -z "$changed" ]; then
+            echo "pr-touches-non-submission-files: PR contains no changed submission files" >&2
+            exit 1
+          fi
+          package_dir=""
+          while IFS= read -r path; do
+            case "$path" in
+              *..*|/*)
+                echo "pr-touches-non-submission-files: path escapes submission directory: $path" >&2
+                exit 1
+                ;;
+            esac
+            if [[ ! "$path" =~ ^submissions/phase1/[A-Za-z0-9][A-Za-z0-9-]{0,38}/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/.+$ ]]; then
+              echo "pr-touches-non-submission-files: submission PRs may only modify their own submission directory ($path)" >&2
+              exit 1
+            fi
+            dir="$(printf '%s\n' "$path" | cut -d/ -f1-4)"
+            if [ -n "$package_dir" ] && [ "$package_dir" != "$dir" ]; then
+              echo "pr-touches-non-submission-files: PR touches multiple submission directories" >&2
+              exit 1
+            fi
+            package_dir="$dir"
+          done <<< "$changed"
+          {
+            printf 'package_dir=%s\n' "$package_dir"
+            printf 'changed_files<<EOF\n%s\nEOF\n' "$changed"
+          } >> "$GITHUB_OUTPUT"
+
+  act:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.base_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Overlay allowlisted submission directory
+        env:
+          HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+          PACKAGE_DIR: ${{ needs.prepare.outputs.package_dir }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$HEAD_SHA"
+          git checkout "$HEAD_SHA" -- "$PACKAGE_DIR"
+      - name: Fetch pinned upstream dataset
+        run: python -c "from openevmbench.upstream import ensure_upstream; ensure_upstream()"
+      - name: Run submission checks
+        env:
+          CHANGED_FILES: ${{ needs.prepare.outputs.changed_files }}
+          PR_AUTHOR: ${{ needs.prepare.outputs.pr_author }}
+          PR_AUTHOR_ID: ${{ needs.prepare.outputs.pr_author_id }}
+        run: |
+          python -m openevmbench.cli check-pr \
+            --changed-files "$CHANGED_FILES" \
+            --pr-author "$PR_AUTHOR" \
+            --pr-author-id "$PR_AUTHOR_ID"

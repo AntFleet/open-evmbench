@@ -1,0 +1,26 @@
+{
+  "$comment": "Leaderboard configuration (SPEC §2/§3). Reference targets are published claims, never ranked. prize_excluded_operators lists GitHub handles whose rows render but never qualify for any prize (AntFleet reference submissions).",
+  "default_judge_group": {
+    "model": "gpt-5",
+    "reasoning_effort": "high"
+  },
+  "rank_window_days": 7,
+  "prize_excluded_operators": ["antfleet", "antfleetdev"],
+  "reference_targets": [
+    {
+      "label": "Claude Opus 4.6 — Detect SOTA",
+      "reported_by": "Anthropic (EVMbench paper, Table 9)",
+      "score_pct": 45.6,
+      "primary": true
+    },
+    {
+      "label": "GPT-5.3-Codex — Detect",
+      "reported_by": "OpenAI (EVMbench paper, Table 9)",
+      "score_pct": 39.2,
+      "primary": false
+    }
+  ],
+  "open_weights_patterns": [
+    "llama", "qwen", "deepseek", "mistral", "mixtral", "gpt-oss", "kimi", "glm", "gemma", "phi-"
+  ]
+}
