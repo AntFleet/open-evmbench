@@ -120,8 +120,7 @@ def _row_html(row: RankedRow, config: BoardConfig, depth: int = 0) -> str:
         f"<td><a href='{prefix}scaffolds/{_slug(a.scaffold_name)}.html'>{_esc(a.scaffold_name)}</a></td>"
         f"<td>{_esc(a.created_at[:10])}</td>"
         f"<td>{_esc(a.record.get('promoted_at', '—')[:10])}</td>"
-        f"<td><a href='{prefix}{_esc(a.path)}'>record</a> ({row.attempt_count} attempt"
-        f"{'s' if row.attempt_count != 1 else ''})</td></tr>"
+        f"<td><a href='{prefix}{_esc(a.path)}'>record</a></td></tr>"
     )
 
 
@@ -183,7 +182,7 @@ def render_site(
             f"Default view: judge group comparable to the OpenAI paper "
             f"({_esc(config.default_judge_model)}, reasoning_effort="
             f"{_esc(config.default_judge_reasoning_effort)}, pinned prompt). "
-            f"One best promoted row per GitHub identity. "
+            f"One row per accepted submission. "
             f"Rank Δ is movement over the last {config.rank_window_days} days.",
         ),
         encoding="utf-8",

@@ -155,9 +155,10 @@ def test_ranking_and_tiebreakers(submissions):
     attempts = load_attempts(submissions, public_key_path=None)
     rows = ranked_rows(attempts, CONFIG, comparable_only=True)
     ops = [r.attempt.operator for r in rows]
-    # alice ties bob on score (2/3) but used fewer tokens -> alice first
-    assert ops == ["alice", "bob", "antfleet"]
-    assert rows[0].attempt_count == 2  # alice's attempt history behind the row
+    # One row per submission — alice's 2/3 (100k) beats bob's 2/3 (200k) on
+    # tokens; alice's 1/3 attempt and antfleet's 1/3 attempt also appear.
+    # antfleet (80k) tie-breaks above alice's 1/3 (100k) on tokens.
+    assert ops == ["alice", "bob", "antfleet", "alice"]
     # yanked (dave), rejected (erin), non-comparable judge (carol) absent
     assert "dave" not in ops and "erin" not in ops and "carol" not in ops
 
@@ -174,11 +175,24 @@ def test_rank_movement(submissions):
     attempts = load_attempts(submissions, public_key_path=None)
     rows = ranked_rows(attempts, CONFIG, comparable_only=True)
     rows = with_rank_movement(rows, attempts, CONFIG, NOW)
-    by_op = {r.attempt.operator: r for r in rows}
-    # 7 days ago (2026-06-03): bob #1, alice #2 (1/3), antfleet not yet... promoted 06-05 -> absent
-    assert by_op["alice"].movement == 1   # 2 -> 1
-    assert by_op["bob"].movement == -1    # 1 -> 2
-    assert by_op["antfleet"].movement is None  # new in window
+    by_sub = {r.attempt.submission_id: r for r in rows}
+    # 7 days ago (2026-06-03): bob's 2/3 (#1) and alice's 1/3 (#2) are
+    # the only promoted rows. Alice's 2/3 (06-08) and antfleet (06-05) are
+    # promoted within the window — both surface as new.
+    bob_sid = next(s for s, r in by_sub.items() if r.attempt.operator == "bob")
+    alice_low_sid = next(
+        s for s, r in by_sub.items()
+        if r.attempt.operator == "alice" and r.attempt.solved_count == 1
+    )
+    alice_high_sid = next(
+        s for s, r in by_sub.items()
+        if r.attempt.operator == "alice" and r.attempt.solved_count == 2
+    )
+    antfleet_sid = next(s for s, r in by_sub.items() if r.attempt.operator == "antfleet")
+    assert by_sub[bob_sid].movement == -1            # 1 -> 2
+    assert by_sub[alice_low_sid].movement == -2      # 2 -> 4 (antfleet + alice's 2/3 jumped ahead)
+    assert by_sub[alice_high_sid].movement is None   # new in window
+    assert by_sub[antfleet_sid].movement is None     # new in window
 
 
 def test_first_solvers_cross_judge(submissions):
@@ -227,7 +241,10 @@ def test_render_site(submissions, tmp_path):
     index = (out / "index.html").read_text()
     assert "Claude Opus 4.6" in index and "45.6% paper" in index   # reference target row
     assert "prize-excluded" in index                                # antfleet marking
-    assert "▲" in index and "▼" in index                            # movement arrows
+    # Bob's submission drops from #1 to #2 as alice's new 2/3 + antfleet land
+    # above it — only ▼ surfaces with this fixture. Per-submission movement
+    # has no natural ▲ unless higher-rank records get yanked.
+    assert "▼" in index
     assert "@alice" in index
     assert "@carol" not in index                                    # non-default judge
 
@@ -242,8 +259,12 @@ def test_render_site(submissions, tmp_path):
     assert "all-open-weights" in moments
 
     board = json.loads((out / "data" / "board.json").read_text())
+    # Alice's top row is alice's 2/3 submission (new in window → movement None).
     assert board["default_board"][0]["operator"] == "alice"
-    assert board["default_board"][0]["movement"] == 1
+    assert board["default_board"][0]["movement"] is None
+    # Bob's submission is now #2, having dropped by one.
+    assert board["default_board"][1]["operator"] == "bob"
+    assert board["default_board"][1]["movement"] == -1
     assert any(r["prize_excluded"] for r in board["default_board"])
 
     for page in ("history.html", "models/gpt-5.3-codex.html",
@@ -251,7 +272,9 @@ def test_render_site(submissions, tmp_path):
         assert (out / page).is_file(), page
 
 
-def test_rank_movement_keys_by_operator_and_harness_version(tmp_path):
+def test_rank_movement_tracks_each_submission(tmp_path):
+    """Movement is per-submission: a row's delta is its own rank movement,
+    independent of other submissions by the same operator."""
     root = tmp_path / "submissions"
     records = [
         make_record(
@@ -294,12 +317,20 @@ def test_rank_movement_keys_by_operator_and_harness_version(tmp_path):
 
     attempts = load_attempts(root, public_key_path=None)
     rows = with_rank_movement(ranked_rows(attempts, CONFIG), attempts, CONFIG, NOW)
-    by_key = {(r.attempt.operator, r.attempt.harness_version): r for r in rows}
-    assert by_key[("alice", "detect-v1")].movement == -1
-    assert by_key[("alice", "detect-v2")].movement == 1
+    by_sid = {r.attempt.submission_id: r for r in rows}
+    # Submission 104 (alice, 2/3, promoted 06-09) is new in window
+    sid_104 = next(s for s in by_sid if s.endswith("104"))
+    assert by_sid[sid_104].movement is None
+    # Submission 101 (alice detect-v1, 2/3) was rank #2 at the window start
+    # (behind bob's 3/3). Sub 104 jumps above on tokens → 101 drops to #3.
+    sid_101 = next(s for s in by_sid if s.endswith("101"))
+    assert by_sid[sid_101].movement == -1
 
 
-def test_board_dedup_uses_github_id_not_handle(tmp_path):
+def test_renamed_github_handle_still_emits_both_rows(tmp_path):
+    """Renaming a GitHub handle (same github_id) does not affect per-row
+    behavior: both submissions still appear, each at the rank their score
+    earns."""
     root = tmp_path / "submissions"
     records = [
         make_record(
@@ -325,8 +356,9 @@ def test_board_dedup_uses_github_id_not_handle(tmp_path):
         (d / "record.json").write_text(json.dumps(r))
 
     rows = ranked_rows(load_attempts(root, public_key_path=None), CONFIG)
-    assert [r.attempt.operator for r in rows] == ["new-name"]
-    assert rows[0].attempt_count == 2
+    # Both submissions present, the 2/3 one ranks first regardless of handle.
+    assert [r.attempt.operator for r in rows] == ["new-name", "old-name"]
+    assert {r.attempt.github_id for r in rows} == {500}
 
 
 def test_comparable_requires_default_temperature():
