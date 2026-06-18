@@ -146,7 +146,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install trusted runtime dependencies
-        run: python -m pip install cryptography jsonschema pyyaml
+        # rfc8785 is required by openevmbench.jcs (used by signing). Keep this
+        # list aligned with pyproject.toml's runtime deps; the explicit install
+        # is deliberate (smaller supply chain attached to the signing key)
+        # rather than `pip install -e .`.
+        run: python -m pip install cryptography jsonschema pyyaml rfc8785
       - name: Overlay allowlisted submission directory
         env:
           HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
