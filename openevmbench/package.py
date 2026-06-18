@@ -1,4 +1,4 @@
-"""Submission packaging: deterministic archive, record assembly, PR layout.
+"""Submission packaging: portable artifacts manifest, record assembly, PR layout.
 
 PR package layout (SPEC §4):
 
@@ -8,20 +8,22 @@ PR package layout (SPEC §4):
       agent_artifacts/
         <audit-id>/audit.md      (one report per audit; 40 for a full run)
 
-Note on `submission.archive_hash`: the archive is a deterministic tar.gz of
-the `agent_artifacts/` tree (sorted entries, zeroed timestamps/owners, gzip
-mtime 0). The archive file itself is NOT committed in the PR — the artifacts
-are present unpacked, and the deterministic recipe lets anyone rebuild the
-exact bytes and check the hash. `note_hash` is omitted in v1 because Detect
-runs produce one audit.md per audit, not a single top-level audit.md.
+`submission.archive_hash` is the SHA-256 of a portable, length-prefixed
+serialization of the `agent_artifacts/` tree (manifest-v1 scheme, see
+`deterministic_archive` below). The previous tar.gz-based scheme produced
+different bytes across (OS, Python, zlib) combos, breaking cross-environment
+verification; the manifest scheme depends only on file contents + relative
+paths and is deterministic everywhere. `submission.archive_size_bytes` is
+the length of those serialized manifest bytes. The archive file itself is
+NOT committed in the PR — artifacts are present unpacked, and the
+deterministic recipe lets anyone rebuild the exact bytes and check the
+hash. `note_hash` is omitted in v1 because Detect runs produce one audit.md
+per audit, not a single top-level audit.md.
 """
 
 from __future__ import annotations
 
-import gzip
-import io
 import json
-import tarfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,23 +52,48 @@ def new_submission_id() -> str:
     return str(uuid.UUID(int=value))
 
 
+_MANIFEST_SCHEME = b"openevmbench-artifacts-manifest-v1\n"
+
+
 def deterministic_archive(artifacts_dir: Path | str) -> bytes:
-    """tar.gz of `artifacts_dir` with all nondeterminism stripped."""
+    """Return a portable, deterministic serialization of `artifacts_dir`.
+
+    Scheme `openevmbench-artifacts-manifest-v1`:
+
+        domain_separator || for each (sorted) entry:
+            uint32_be(len(rel_path_bytes)) || rel_path_bytes ||
+            uint64_be(len(content_bytes)) || content_bytes
+
+    where rel_path_bytes is the file's path relative to artifacts_dir encoded
+    as UTF-8 with POSIX separators ("/"), and the entry list is sorted by
+    that byte-sequence. Symlinks and directories are skipped; only regular
+    files are included.
+
+    This replaces the previous tar.gz-based scheme, which produced different
+    bytes across (OS, Python version, zlib build) combinations and broke
+    cross-environment verification (Issue #10). The manifest depends only
+    on file contents and paths — no archive lib, no compression, no
+    platform-dependent metadata — so the SHA-256 is deterministic on any
+    Python 3.11+ stdlib.
+
+    The return value is NOT a usable archive file; it's a hashable
+    canonical representation. Code that needs an actual archive file can
+    tar/zip the agent_artifacts directory on the fly.
+    """
     artifacts_dir = Path(artifacts_dir)
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tar:
-        for path in sorted(
-            p for p in artifacts_dir.rglob("*") if not p.is_symlink() and p.is_file()
-        ):
-            info = tarfile.TarInfo(name=str(path.relative_to(artifacts_dir)))
-            data = path.read_bytes()
-            info.size = len(data)
-            info.mtime = 0
-            info.uid = info.gid = 0
-            info.uname = info.gname = ""
-            info.mode = 0o644
-            tar.addfile(info, io.BytesIO(data))
-    return gzip.compress(buf.getvalue(), compresslevel=9, mtime=0)
+    out = bytearray(_MANIFEST_SCHEME)
+    entries = sorted(
+        (p.relative_to(artifacts_dir).as_posix().encode("utf-8"), p)
+        for p in artifacts_dir.rglob("*")
+        if p.is_file() and not p.is_symlink()
+    )
+    for rel_path_bytes, full_path in entries:
+        data = full_path.read_bytes()
+        out += len(rel_path_bytes).to_bytes(4, "big")
+        out += rel_path_bytes
+        out += len(data).to_bytes(8, "big")
+        out += data
+    return bytes(out)
 
 
 @dataclass(frozen=True)

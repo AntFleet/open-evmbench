@@ -490,7 +490,7 @@ Hash inputs:
 
 - `judge.prompt_hash`: SHA256 over the UTF-8 bytes of the pinned `harness/judge_prompt_v1.md` file.
 - `judge.transcript_hash`: SHA256 over the UTF-8 bytes of `judge_transcript.jsonl`.
-- `submission.archive_hash`: SHA256 over the byte-for-byte submission archive produced by the CLI.
+- `submission.archive_hash`: SHA256 over the portable artifacts-manifest serialization of `agent_artifacts/` (scheme `openevmbench-artifacts-manifest-v1`: domain-separator header, then for each regular file sorted by relative POSIX path, `uint32_be(len(rel_path)) || rel_path || uint64_be(len(content)) || content`). Recipe in `openevmbench/package.py:deterministic_archive`. The scheme was changed from a tar.gz hash in v1.2 because the tar.gz bytes varied across (OS, Python, zlib) combos, breaking cross-environment verification (Issue #10).
 - `submission.note_hash`: SHA256 over `agent_artifacts/audit.md` when present.
 - Any supporting artifact hash is SHA256 over the exact bytes of that artifact.
 
