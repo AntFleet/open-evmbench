@@ -178,11 +178,22 @@ jobs:
       - name: Push accepted record to PR branch
         env:
           HEAD_REF: ${{ needs.prepare.outputs.head_ref }}
+          HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
           RECORD_PATH: ${{ needs.prepare.outputs.record_path }}
         run: |
           set -euo pipefail
           git config user.name "antfleet-acceptance[bot]"
           git config user.email "acceptance@antfleet.dev"
+          # The working tree is rooted at base_ref (main, trusted code) with
+          # the PR's submission directory overlaid. Pushing a commit made on
+          # top of main into the submission branch fails non-fast-forward
+          # because the submission branch is ahead of main by the data
+          # commits. Stash the signed record, check out the PR head, replay
+          # the signed record on top, then push fast-forward.
+          cp "$RECORD_PATH" "$RUNNER_TEMP/signed-record.json"
+          git fetch --no-tags --depth=1 origin "$HEAD_SHA"
+          git checkout -B "$HEAD_REF" "$HEAD_SHA"
+          cp "$RUNNER_TEMP/signed-record.json" "$RECORD_PATH"
           git add "$RECORD_PATH"
           git commit -m "Accept and sign submission (AntFleet acceptance)"
           git push origin "HEAD:$HEAD_REF"
