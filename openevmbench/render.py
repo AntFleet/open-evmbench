@@ -45,7 +45,8 @@ _CSS = """
 body{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin:2rem auto;max-width:72rem;
 padding:0 1rem;color:#1a1a1a;background:#fafaf8;font-size:14px;line-height:1.5}
 h1{font-size:1.3rem}h2{font-size:1.1rem;margin-top:2rem}
-table{border-collapse:collapse;width:100%;margin:1rem 0}
+.table-wrap{overflow-x:auto;margin:1rem 0}
+table{border-collapse:collapse;width:100%;margin:0}
 th,td{text-align:left;padding:.35rem .6rem;border-bottom:1px solid #ddd;white-space:nowrap}
 th{border-bottom:2px solid #999;font-weight:600}
 tr.target{background:#fff8e1}tr.excluded{background:#f0f0f0;color:#555}
@@ -83,7 +84,7 @@ def _page(title: str, body: str, depth: int = 0) -> str:
 
 def _table(headers: list[str], rows: list[str]) -> str:
     head = "".join(f"<th>{_esc(h)}</th>" for h in headers)
-    return f"<table><tr>{head}</tr>{''.join(rows)}</table>"
+    return f"<div class='table-wrap'><table><tr>{head}</tr>{''.join(rows)}</table></div>"
 
 
 def _movement_cell(movement: int | None) -> str:
