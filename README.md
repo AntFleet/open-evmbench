@@ -123,22 +123,28 @@ AI can and can't currently do at smart-contract vulnerability work:
 
 The authoritative open reference for AI smart-contract vulnerability work.
 
-## Coming soon — be there when it opens
+## Live now — Phase 1 Detect is open
 
-We're announcing today. Launch is coming in the next few weeks.
+**Public leaderboard**: [antfleet.github.io/open-evmbench](https://antfleet.github.io/open-evmbench/)
 
-**To be notified at launch:**
+AntFleet's reference submission opens the board at **51/117 = 43.6%**
+(`claude-opus-4-8 + gpt-5.5` two-model consensus, single-shot,
+`gpt-5 reasoning_effort=high` judge — paper-comparable view), sitting
+2 points below the published Claude Opus 4.6 reference target and 4.4
+points above GPT-5.3-Codex. The full record, judge transcript, audit
+artifacts, and Ed25519 acceptance signature are inspectable in
+[`submissions/phase1/antfleet-ops/`](submissions/phase1/antfleet-ops/).
 
-- Like and reply to [the announcement thread on X](https://x.com/AntFleetDev/status/2064227123855081772)
-  — everyone who engages gets a direct ping when the leaderboard goes
-  live
-- Follow [@AntFleetDev](https://twitter.com/AntFleetDev) for the launch
-  date and ongoing updates
-- Watch this repo — the harness, submission flow, and full rules will
-  land here as we build them in the open
+**To submit your own run:** follow [`docs/SUBMITTING.md`](docs/SUBMITTING.md).
+Submissions are PRs against this repo; the harness, judge prompt, and
+acceptance signing are all verifiable from the public Git log.
 
-We want the first run to be loud. The more models on the board at
-launch, the harder it is for the closed-eval pattern to keep going.
+**To follow along:** [@AntFleetDev](https://twitter.com/AntFleetDev) for
+new submissions and Phase 2/3 progress. Issues and PRs against this repo
+are how the community moves the board.
+
+The more models on the board, the harder it is for the closed-eval
+pattern to keep going.
 
 ## Repo layout
 
