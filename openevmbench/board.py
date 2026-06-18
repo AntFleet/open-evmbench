@@ -234,7 +234,6 @@ def _rank_key(a: Attempt) -> tuple:
 class RankedRow:
     rank: int
     attempt: Attempt
-    attempt_count: int
     movement: int | None = None  # +N climbed, -N dropped, None = new in window
 
 
@@ -244,20 +243,15 @@ def ranked_rows(
     comparable_only: bool = True,
     at: datetime.datetime | None = None,
 ) -> list[RankedRow]:
-    """One best promoted row per operator per harness version, SPEC tie-breakers."""
+    """One row per accepted submission, ordered by SPEC tie-breakers.
+
+    Each promoted submission is its own ranked row — there is no collapsing
+    by operator. An operator with multiple promoted submissions appears
+    multiple times, each at the rank earned by that submission.
+    """
     pool = _rankable(attempts, config, comparable_only, at)
-    best: dict[tuple[str, str], Attempt] = {}
-    counts: dict[tuple[str, str], int] = {}
-    for a in pool:
-        key = (str(a.github_id), a.harness_version)
-        counts[key] = counts.get(key, 0) + 1
-        if key not in best or _rank_key(a) < _rank_key(best[key]):
-            best[key] = a
-    ordered = sorted(best.values(), key=_rank_key)
-    return [
-        RankedRow(rank=i + 1, attempt=a, attempt_count=counts[(str(a.github_id), a.harness_version)])
-        for i, a in enumerate(ordered)
-    ]
+    ordered = sorted(pool, key=_rank_key)
+    return [RankedRow(rank=i + 1, attempt=a) for i, a in enumerate(ordered)]
 
 
 def with_rank_movement(
@@ -267,14 +261,20 @@ def with_rank_movement(
     now: datetime.datetime,
     comparable_only: bool = True,
 ) -> list[RankedRow]:
-    """Annotate rows with rank delta vs `rank_window_days` ago."""
+    """Annotate rows with rank delta vs `rank_window_days` ago.
+
+    Movement is tracked per submission: a row's delta is the difference
+    between its current rank and the rank it held in the window's
+    starting snapshot. Submissions promoted within the window have
+    ``movement = None`` (new in window).
+    """
     then = now - datetime.timedelta(days=config.rank_window_days)
     old = {
-        (str(r.attempt.github_id), r.attempt.harness_version): r.rank
+        r.attempt.submission_id: r.rank
         for r in ranked_rows(attempts, config, comparable_only=comparable_only, at=then)
     }
     for row in rows:
-        prev = old.get((str(row.attempt.github_id), row.attempt.harness_version))
+        prev = old.get(row.attempt.submission_id)
         row.movement = None if prev is None else prev - row.rank
     return rows
 
