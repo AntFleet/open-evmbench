@@ -142,8 +142,19 @@ def validate_lifecycle(record: dict[str, Any]) -> ValidationResult:
 
 
 def validate_phase1_detect(record: dict[str, Any]) -> ValidationResult:
-    """Phase 1 Detect launch-board rules on top of the submitted profile."""
-    result = validate_submitted(record)
+    """Phase 1 Detect launch-board rules.
+
+    Records carrying an `antfleet_acceptance` block have already been signed
+    by acceptance-signing and are in a lifecycle state (accepted/promoted/
+    yanked). For those we validate against the lifecycle profile rather than
+    the submitted profile (which forbids the very acceptance fields the
+    signing workflow legitimately writes back to the PR branch). Submission
+    PRs that have NOT yet been signed are still validated as submitted.
+    """
+    if "antfleet_acceptance" in record:
+        result = validate_lifecycle(record)
+    else:
+        result = validate_submitted(record)
 
     if record.get("phase") != constants.PHASE_DETECT:
         result.errors.append(f"phase must be {constants.PHASE_DETECT} for the Phase 1 board")
