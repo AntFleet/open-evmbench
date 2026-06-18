@@ -2,6 +2,10 @@
 # write promoted_at + promoted_commit_sha in a follow-up commit.
 # promoted_commit_sha is the merge commit that landed the accepted record;
 # this follow-up metadata commit references it.
+#
+# Branch protection on main disallows direct workflow pushes (requires
+# verified signatures + PR + status checks), so the workflow opens a PR
+# instead. A maintainer reviews and merges to complete the promotion.
 name: promote
 
 on:
@@ -12,6 +16,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   promote:
@@ -42,14 +47,33 @@ jobs:
                   promoted.append(str(record_path))
           pathlib.Path("promoted.txt").write_text("\n".join(promoted))
           EOF
-      - name: Commit promotion metadata
+      - name: Open promotion PR
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -s promoted.txt ]; then
-            git config user.name "antfleet-acceptance[bot]"
-            git config user.email "acceptance@antfleet.dev"
-            git add submissions/
-            git commit -m "Promote accepted submission(s) into the public log"
-            git push
-          else
+          if [ ! -s promoted.txt ]; then
             echo "no accepted records awaiting promotion"
+            exit 0
           fi
+          BRANCH="auto-promote/$(git rev-parse --short HEAD)"
+          git config user.name "antfleet-acceptance[bot]"
+          git config user.email "acceptance@antfleet.dev"
+          git checkout -b "$BRANCH"
+          git add submissions/
+          git commit -m "Promote accepted submission(s) into the public log"
+          git push origin "$BRANCH"
+          # Use a body file so promoted.txt contents are passed cleanly
+          {
+            printf 'Automated promotion PR.\n\n'
+            printf 'Records promoted (state accepted → promoted, '
+            printf 'promoted_at + promoted_commit_sha written):\n\n'
+            while IFS= read -r path; do printf -- '- `%s`\n' "$path"; done < promoted.txt
+            printf '\nMerge commit referenced: %s\n' "${{ github.sha }}"
+          } > /tmp/pr-body.md
+          gh pr create --base main --head "$BRANCH" \
+            --title "Auto-promote accepted submission(s)" \
+            --body-file /tmp/pr-body.md \
+            --label promote-bot 2>&1 || \
+          gh pr create --base main --head "$BRANCH" \
+            --title "Auto-promote accepted submission(s)" \
+            --body-file /tmp/pr-body.md
