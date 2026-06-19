@@ -1,0 +1,11 @@
+# Audit: 2024-03-coinbase
+
+## Nonce Burning via Invalid Signature in Paymaster Validation
+- Location: `src/MagicSpend/MagicSpend.sol : validatePaymasterUserOp`
+- Mechanism: The function calls `_validateRequest(userOp.sender, withdrawRequest)` before verifying the withdraw request's signature. `_validateRequest` permanently marks the request's nonce as used in the `_nonceUsed` mapping. If the subsequent signature verification fails, the function returns `validationData` with the `sigFailed` bit set to `1` instead of reverting. According to the ERC-4337 specification, when a paymaster returns `sigFailed = 1`, the EntryPoint rejects the UserOp but does **not** revert the state changes made during the validation phase. 
+- Impact: An attacker can submit UserOps containing valid target nonces but invalid signatures. The EntryPoint will drop these UserOps, but the targeted nonces will be permanently burned on-chain. This allows an attacker to grief any user by sequentially burning their nonces, effectively blocking them from ever using the paymaster.
+
+## Denial of Service via `postOpReverted` Assert
+- Location: `src/MagicSpend/MagicSpend.sol : postOp`
+- Mechanism: The `postOp` function contains the assertion `assert(mode != PostOpMode.postOpReverted)`. The developer assumed this mode is unreachable because the paymaster's balance is checked against `withdrawAmount` during `validatePaymasterUserOp`. However, during the UserOp execution phase, the smart wallet can arbitrarily call back into the paymaster (e.g., via `withdraw()` with another valid request, or `withdrawGasExcess()`) and drain its ETH balance. If the paymaster's balance drops below the remaining gas refund amount, the `SafeTransferLib.forceSafeTransferETH` call in the first `postOp` invocation will revert. The EntryPoint catches this revert and invokes `postOp` a second time with `mode == PostOpMode.postOpReverted`, which triggers the assert and reverts the entire EntryPoint transaction.
+- Impact: An attacker can craft a UserOp that intentionally drains the paymaster's ETH balance during execution, causing the first `postOp` call to fail. This triggers the assert, reverting the entire bundle and causing a Denial of Service for all other UserOps processed by the bundler in that transaction, while also wasting the bundler's gas.
