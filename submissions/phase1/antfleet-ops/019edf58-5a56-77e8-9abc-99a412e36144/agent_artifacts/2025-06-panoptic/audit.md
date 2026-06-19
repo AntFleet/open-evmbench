@@ -1,0 +1,16 @@
+# Audit: 2025-06-panoptic
+
+## Zero-fulfillment bricks user funds via division by zero
+- Location: `HypoVault.sol` : `executeDeposit`, `executeWithdrawal`
+- Mechanism: When the manager calls `fulfillDeposits(0, …)` or `fulfillWithdrawals(0, …)`, the epoch state is recorded with `assetsFulfilled = 0` / `sharesFulfilled = 0` (while `assetsDeposited` / `sharesWithdrawn` are non-zero). When a user later calls `executeDeposit` or `executeWithdrawal` for that epoch, the share/asset calculation performs `Math.mulDiv(userAssetsDeposited, sharesReceived, assetsFulfilled)` or `Math.mulDiv(sharesToFulfill, assetsReceived, sharesFulfilled)` — both divide by the zero `assetsFulfilled`/`sharesFulfilled`. `Math.mulDiv` reverts on a zero denominator, so users can never execute their pending deposit or withdrawal for that epoch. The remainder-carry-forward logic that would move unfulfilled amounts to the next epoch is unreachable because the function reverts first. Shares and assets are permanently locked.
+- Impact: A malicious or careless manager can permanently brick all user deposits or withdrawals in any epoch by fulfilling zero. Affected users cannot claim shares (deposits) or assets (withdrawals), and `cancelDeposit`/`cancelWithdrawal` only work for the *current* epoch, not past ones.
+
+## Uninitialized `feeWallet` bricks profitable withdrawals
+- Location: `HypoVault.sol` : `executeWithdrawal`
+- Mechanism: `feeWallet` is a storage variable initialized to `address(0)` and only set via `setFeeWallet` (owner-only). In `executeWithdrawal`, when `performanceFee > 0` (which occurs whenever `performanceFeeBps > 0` and `assetsToWithdraw > withdrawnBasis`), the contract executes `SafeTransferLib.safeTransfer(underlyingToken, feeWallet, performanceFee)`. For standard ERC-20 tokens, transferring to `address(0)` reverts, causing the entire `executeWithdrawal` call to revert.
+- Impact: If the owner does not set `feeWallet` before any profitable withdrawal is fulfilled, every user with a profit on their withdrawal basis is permanently unable to claim their assets. Their withdrawal remains stuck in the queued state indefinitely.
+
+## Collateral balance double-counting inflates NAV
+- Location: `PanopticVaultAccountant.sol` : `computeNAV`
+- Mechanism: For each pool, the accountant adds the redeem value of the vault's collateral token balances (`pools[i].pool.collateralToken0().previewRedeem(...)` and `collateralToken1().previewRedeem(...)`) to that pool's exposure. The `skipToken0`/`skipToken1` deduplication logic only covers pool `token0`/`token1` balances (checked against the `underlyingTokens` array), not collateral tokens. If two distinct `PanopticPool` entries in the `pools` array share the same collateral token (e.g., two PanopticPools deployed for the same Uniswap pool, or pools that share a collateral wrapper), the vault's collateral balance for that token is added to `poolExposure` in both iterations, double-counting it in the NAV.
+- Impact: The reported NAV is inflated, causing `fulfillDeposits` to mint fewer shares to depositors than warranted (they overpay) and `fulfillWithdrawals` to pay out more assets than warranted (draining value from remaining shareholders). A manager who controls the `poolsHash` could exploit this to extract value from the vault.

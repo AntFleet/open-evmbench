@@ -1,0 +1,18 @@
+# Audit: 2024-01-renft
+
+# Security Audit Report
+
+## Guard `disableModule` checks wrong calldata parameter
+- Location: `src/libraries/RentalConstants.sol` : `gnosis_safe_disable_module_offset` constant (used in `src/policies/Guard.sol` : `_checkTransaction`)
+- Mechanism: The constant `gnosis_safe_disable_module_offset` is set to `0x24`, which corresponds to the **first** parameter (`prevModule`) of Gnosis Safe's `disableModule(address prevModule, address module)`, not the second parameter (`module`). The guard loads the address at this offset and checks it against `whitelistedExtensions`. Because `prevModule` is the linked-list predecessor of the module being removed, an attacker can supply a whitelisted extension as `prevModule` while targeting a critical non-whitelisted module (e.g., the Stop policy) as `module`. The whitelist check passes on `prevModule`, and the critical module is disabled.
+- Impact: A rental safe owner can disable the Stop policy module from their safe by first adding any whitelisted extension (which inserts it at the head of the module linked list, before the Stop policy), then calling `disableModule(whitelistedExtension, stopPolicy)`. This permanently prevents the rental from being stopped via the protocol, locking rented assets in the safe and creating a denial-of-service condition for lenders who cannot reclaim their assets.
+
+## EIP-712 `OrderMetadata` hash omits `orderType` and `emittedExtraData`
+- Location: `src/packages/Signer.sol` : `_deriveOrderMetadataHash`
+- Mechanism: The EIP-712 type string for `OrderMetadata` is `"OrderMetadata(uint8 orderType,uint256 rentDuration,Hook[] hooks,bytes emittedExtraData)"`, which includes four fields. However, the actual hash computation only encodes `rentDuration` and the packed hook hashes — it omits `metadata.orderType` and `metadata.emittedExtraData`. This means the zone hash (which the offerer signs via Seaport) and the protocol signer's signature on the `RentPayload` do not cryptographically bind to these two fields.
+- Impact: A fulfiller who possesses a valid protocol signature can freely modify `emittedExtraData` to inject arbitrary data into the `RentalOrderStarted` event without invalidating the offerer's zone hash or the protocol signer's signature, breaking data integrity for off-chain indexers and consumers. Additionally, the `orderType` field is not bound by the signature; while current item-structure validation happens to prevent cross-type substitution, any future protocol change that relaxes item structure requirements could allow order-type confusion attacks.
+
+## `stopRent` / `stopRentBatch` perform external interactions before verifying order existence
+- Location: `src/policies/Stop.sol` : `stopRent` and `stopRentBatch`
+- Mechanism: Both functions call hooks (`_removeHooks`), reclaim rented assets (`_reclaimRentedItems`), and settle payments (`ESCRW.settlePayment`) **before** calling `STORE.removeRentals`, which is the only place that reverts if the order hash does not exist in storage. This is a checks-effects-interactions violation: the order's existence is verified last, after multiple external calls have already been made.
+- Impact: For a non-existent order, the external calls execute and then the transaction reverts, so the atomicity of the EVM prevents permanent state corruption. However, during hook execution (which occurs before the existence check), a registered hook with `onStop` enabled receives arbitrary external call execution while the protocol is in an inconsistent state (order not yet removed from storage). This creates a reentrancy surface that could be exploited if combined with another protocol vulnerability or a future code change that relaxes reentrancy constraints.

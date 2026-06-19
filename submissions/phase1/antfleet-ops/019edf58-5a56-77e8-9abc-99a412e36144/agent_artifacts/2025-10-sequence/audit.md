@@ -1,0 +1,16 @@
+# Audit: 2025-10-sequence
+
+## Estimator image-hash validation bypass and arbitrary execution
+- Location: `src/Estimator.sol` : `_isValidImage` / `estimate`
+- Mechanism: `Estimator._isValidImage` calls `super._isValidImage(_imageHash)` but discards the return value and unconditionally `return true`. Combined with `estimate`'s use of `readNonce(decoded.space)` (which always matches the current nonce, bypassing the nonce check) and the fact that `_estimate` performs real `call`/`delegatecall` execution (not simulation), any caller can craft a self-consistent signature using their own keys (threshold 1, weight 1), and `signatureValidation` will accept it because `_isValidImage` always returns true. The crafted payload can include a call to `address(this)` with `updateImplementation(attacker)` (or any `onlySelf` function), which passes `onlySelf` because `msg.sender` is the Estimator itself.
+- Impact: Full takeover of the Estimator contract and theft of any ETH/tokens it holds. Anyone can execute arbitrary calls from the Estimator's context without authorization.
+
+## Simulator executes arbitrary calls with no access control
+- Location: `src/Simulator.sol` : `simulate`
+- Mechanism: `simulate` is `external` with no signature validation, no access control, and no `nonReentrant` modifier. It directly executes `LibOptim.call(call.to, call.value, …)` and `LibOptim.delegatecall(…)` for every call in the provided `_calls` array. An attacker can supply a call with `to = address(Simulator)` and `data = abi.encodeWithSelector(updateImplementation.selector, attackerAddress)`. Because the Simulator calls itself, `msg.sender == address(this)` and the `onlySelf` check passes, updating the implementation to an attacker-controlled contract.
+- Impact: Full takeover of the Simulator contract, theft of any funds it holds, and arbitrary execution from its context by any caller.
+
+## Cumulative usage limits never accumulate across calls
+- Location: `src/extensions/sessions/explicit/PermissionValidator.sol` : `validatePermission`
+- Mechanism: `UsageLimit memory usageLimit` is a local value-type copy. When an existing limit is found (`newUsageLimits[j].usageHash == usageHash`), `usageLimit = newUsageLimits[j]` copies the struct. When a new limit is created, `newUsageLimits[j] = usageLimit` stores the struct **before** `usageLimit.usageAmount = value256` is executed. In both cases, `usageLimit.usageAmount = value256` only modifies the local copy; the `newUsageLimits` array element is never updated with the accumulated amount. The returned array therefore contains stale or zero amounts. On subsequent calls in the same payload, the validator finds the array entry with amount 0, reads previous usage from storage (which is still pre-increment), and re-accumulates from the same base—never adding the prior call's contribution.
+- Impact: Session cumulative usage limits (e.g., "total transfer amount ≤ X across all calls") are completely ineffective. A session signer can exceed configured cumulative limits by splitting usage across multiple calls in a single payload, because the accumulation is never persisted back to the limits array that feeds both the validation check and the `incrementUsageLimit` call.
