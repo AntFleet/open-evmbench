@@ -1,0 +1,16 @@
+# Audit: 2024-08-wildcat
+
+## Underflow DoS in `repayAndProcessUnpaidWithdrawalBatches`
+- Location: `src/market/WildcatMarketWithdrawals.sol` : `repayAndProcessUnpaidWithdrawalBatches`
+- Mechanism: The function calculates `availableLiquidity` by subtracting `state.normalizedUnclaimedWithdrawals + state.accruedProtocolFees` from `totalAssets()`. If the market is heavily delinquent or insolvent, `totalAssets()` can be strictly less than the sum of these two accounting variables. Because the subtraction uses a standard `-` operator instead of a saturating subtraction (`satSub`), the transaction will revert with an arithmetic underflow. This happens even if the caller provides a `repayAmount` that is insufficient to completely cover the deficit.
+- Impact: An attacker or an unfortunate state can permanently DoS the `repayAndProcessUnpaidWithdrawalBatches` function when the market is deeply insolvent. This prevents the processing of unpaid withdrawal batches and blocks lenders from claiming their pending withdrawals, even if a good Samaritan attempts to partially repay the market's debt to free up some liquidity.
+
+## Underflow DoS in `collectFees` via `withdrawableProtocolFees`
+- Location: `src/libraries/MarketState.sol` : `withdrawableProtocolFees` (called from `src/market/WildcatMarket.sol` : `collectFees`)
+- Mechanism: `withdrawableProtocolFees` calculates `totalAvailableAssets` by subtracting `state.normalizedUnclaimedWithdrawals` from `totalAssets`. If the underlying asset experiences a balance decrease independent of market operations (e.g., rebasing tokens with negative rebases, slashing mechanisms, or force-fee deductions), `totalAssets()` can drop below `state.normalizedUnclaimedWithdrawals`. This causes a standard arithmetic underflow and reverts the transaction. 
+- Impact: If the underlying asset's balance drops below the reserved unclaimed withdrawals, the `collectFees` function becomes permanently bricked. The protocol fee recipient will be unable to withdraw any accrued protocol fees, even if the market later receives new deposits or repayments that restore `totalAssets()` above the threshold (if the function is called while the balance is temporarily low, it reverts and blocks fee collection).
+
+## Missing ERC20 Zero-Address Validation in `_transfer`
+- Location: `src/market/WildcatMarketToken.sol` : `_transfer`
+- Mechanism: The `_transfer` function lacks the standard ERC20 validation checks that prevent transfers to `address(0)` or the market contract itself (`address(this)`). When a user transfers tokens to `address(0)`, the `_getAccount(address(0))` logic simply adds the scaled balance to the zero address's internal mapping, but crucially, `state.scaledTotalSupply` is **not** reduced.
+- Impact: A user can accidentally or maliciously burn their market tokens by sending them to `address(0)`. Because the total supply is not decreased, the market continues to accrue interest and expects the borrower to repay the debt associated with those "burned" tokens. This leads to a permanent loss of funds for the user and creates an accounting mismatch where the market's liabilities exceed the sum of all claimable lender balances. Furthermore, transferring to the market contract itself traps funds in the contract's internal accounting, which can be manipulated or stuck.

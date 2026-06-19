@@ -1,0 +1,11 @@
+# Audit: 2024-03-neobase
+
+## Voting Power Permanently Locked on Removed Gauges
+- Location: `src/GaugeController.sol` : `vote_for_gauge_weights`
+- Mechanism: The function intends to allow users to withdraw their voting power (vote 0) from gauges that have been removed by governance. It explicitly checks for this with `require(_user_weight == 0 || gauge_types_[_gauge_addr] != 0, ...)`. However, a few lines later, it unconditionally calculates `int128 gauge_type = gauge_types_[_gauge_addr] - 1;` and enforces `require(gauge_type >= 0, "Gauge not added");`. If a gauge has been removed, `gauge_types_[_gauge_addr]` is `0`, making `gauge_type` equal to `-1`. This causes the second require statement to revert, completely blocking the transaction.
+- Impact: If governance removes a gauge, any user who previously allocated voting power to that gauge cannot reset their vote to 0. Their `vote_user_power` remains permanently tied to the removed gauge. If a user reaches the 10,000 (100%) power limit, they are permanently denied from voting on any new or existing gauges, effectively burning their governance voting power.
+
+## Incorrect Historical Reward Accounting Due to Static Timestamp
+- Location: `src/LendingLedger.sol` : `update_market`
+- Mechanism: Inside the `while (i < block.number)` loop that processes historical epochs to calculate accumulated rewards, the `epochTime` variable is calculated using the current `block.number` rather than the loop variable `i` (the specific block being processed). Consequently, `gaugeController.gauge_relative_weight_write(_market, epochTime)` is always queried using the *current* timestamp, regardless of which historical epoch is being updated. 
+- Impact: This breaks the time-weighted reward distribution logic. If `update_market` is delayed and a gauge's relative weight changes in the meantime, all past unprocessed epochs will incorrectly be calculated using the gauge's *current* weight instead of its historical weight at the time of those epochs. An attacker (or malicious governance) can exploit this by artificially inflating a gauge's weight, calling `update_market` to retroactively apply the inflated weight to past epochs to steal excess CANTO rewards, and then decreasing the weight back to normal.
