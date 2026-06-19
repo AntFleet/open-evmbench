@@ -1,0 +1,21 @@
+# Audit: 2024-02-althea-liquid-infrastructure
+
+## Burn operations pollute `holders` with `address(0)`, enabling distribution DoS
+- Location: `LiquidInfrastructureERC20.sol` : `_beforeTokenTransfer`
+- Mechanism: On a burn, `to == address(0)`. The holder-tracking logic unconditionally runs `bool exists = (this.balanceOf(to) != 0); if (!exists) { holders.push(to); }`. Since `balanceOf(address(0))` is always 0, every burn pushes `address(0)` into the `holders` array. `address(0)` is never an approved holder, so it is skipped during payout, but it is never cleaned up either: `_afterTokenTransfer` only removes `from` (the burner), not `to` (address(0)). The only path that removes `address(0)` is minting (where `from == address(0)`), and even that removes at most one entry because the removal loop does not `break` after swapping the last element, leaving duplicates behind when multiple `address(0)` entries exist.
+- Impact: Any holder can burn tokens in many tiny tranches, inflating `holders` with thousands of useless `address(0)` entries. Because `distribute` and `distributeToAllHolders` iterate the entire `holders` array (performing `isApprovedHolder` and `balanceOf` calls per entry), the gas cost of every future distribution grows unboundedly. Eventually distributions may become impossible to complete within block gas, which permanently locks the contract (`LockedForDistribution` stays true and `_endDistribution` is never reached), blocking all transfers, mints, and burns and stranding all revenue.
+
+## `setDistributableERC20s` is not blocked during an in-progress distribution
+- Location: `LiquidInfrastructureERC20.sol` : `setDistributableERC20s` / `distribute`
+- Mechanism: `_beginDistribution` computes `erc20EntitlementPerUnit[j] = balance(distributableERC20s[j]) / supply` and indexes it by position `j` in `distributableERC20s`. `distribute` then pays out `IERC20(distributableERC20s[j]).transfer(recipient, erc20EntitlementPerUnit[j])`. However, `setDistributableERC20s` has no `LockedForDistribution` guard, so the owner can replace `distributableERC20s` while a distribution is only partially complete. Subsequent `distribute` continuations use the new token list paired with the old entitlement array, causing position mismatches.
+- Impact: Entitlements computed for one token get applied to a different token, leading to over- or under-payment of recipients and corrupted revenue accounting. Funds can be drained from a token that was never meant to pay the computed amount, or recipients can be shortchanged.
+
+## `releaseManagedNFT` has a no-op safety check and no distribution-lock guard
+- Location: `LiquidInfrastructureERC20.sol` : `releaseManagedNFT`
+- Mechanism: After transferring the NFT out, the function searches `ManagedNFTs` for `nftContract` and, if found, removes it and `break`s. If not found, execution falls through to `require(true, "unable to find released NFT in ManagedNFTs")`, which always passes regardless of whether the NFT was present. Additionally, unlike `withdrawFromManagedNFTs`, this function has no `!LockedForDistribution` check.
+- Impact: The owner can release (and permanently transfer out) an NFT that this contract owns but that is not listed in `ManagedNFTs`, with the "not found" check silently succeeding. The dead `require` masks the intended invariant, so mismanagement of the `ManagedNFTs` list can lead to NFTs being transferred out without the accounting list being updated. The missing lock also allows NFT release while revenue distribution is in progress.
+
+## `withdrawFromManagedNFTs` lacks access control
+- Location: `LiquidInfrastructureERC20.sol` : `withdrawFromManagedNFTs` / `withdrawFromAllManagedNFTs`
+- Mechanism: These functions are `public` with no `onlyOwner` (or any caller) restriction. Anyone can call them at any time the contract is not locked, pulling all accumulated balances from managed NFTs into the ERC20 contract and advancing the `nextWithdrawal` pointer.
+- Impact: An arbitrary caller can force premature/unscheduled withdrawals, waste gas, interfere with an owner-intended partial withdrawal sequence by advancing `nextWithdrawal`, and move revenue into the distributable contract balance ahead of schedule, disrupting expected operational flow.

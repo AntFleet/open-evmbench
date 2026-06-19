@@ -1,0 +1,11 @@
+# Audit: 2023-07-pooltogether
+
+## Unauthorized yield-fee minting to arbitrary recipient
+- Location: `Vault.sol` : `mintYieldFee`
+- Mechanism: `mintYieldFee(uint256 _shares, address _recipient)` is callable by anyone and the `_recipient` parameter is caller-controlled with no validation against `_yieldFeeRecipient`. The only check is that `_shares` does not exceed `_yieldFeeTotalSupply`. A malicious caller can therefore invoke `mintYieldFee(_yieldFeeTotalSupply, attackerAddress)` to mint the entire accrued yield-fee share balance to themselves (or any other address), permanently stealing the yield fees that were reserved for the legitimate `_yieldFeeRecipient`.
+- Impact: Any attacker can steal all accrued yield fees from the vault. The yield fee recipient will never receive their fees as long as a frontrunner or malicious keeper calls `mintYieldFee` first with a self-chosen recipient.
+
+## False under-collateralization / vault lock-up via donated idle assets
+- Location: `Vault.sol` : `liquidate`
+- Mechanism: `liquidate` only sweeps idle (non-yieldVault) assets into the yield vault when `_amountOut >= _vaultAssets`. If `_amountOut < _vaultAssets`, the idle assets are left in the vault. However `_currentExchangeRate` computes the rate solely from `_yieldVault.maxWithdraw(address(this))` and `_totalSupply()`, ignoring any idle asset balance. When shares are minted (`_mint`) after a liquidation that left idle assets un-swept, the total supply grows but the yield-vault balance used by the exchange-rate formula does not, causing `_currentExchangeRate()` to fall below `_assetUnit`. Once the rate drops below 1, `_isVaultCollateralized()` returns false, which sets `maxDeposit`/`maxMint` to 0 and reverts `liquidate` and `mintYieldFee` — a deadlock, because the only code paths that can move the idle assets into the yield vault (`_deposit` and `liquidate`) are now blocked.
+- Impact: An attacker can donate (direct transfer) an amount of the underlying asset greater than a typical liquidation `amountOut`, then wait for the next liquidation. The vault becomes permanently under-collateralized: deposits, liquidations, and yield-fee minting are all blocked, and withdrawals execute at a depressed exchange rate. The vault is effectively bricked until external intervention (e.g., owner upgrading the contract).
