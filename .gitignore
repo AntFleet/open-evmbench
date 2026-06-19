@@ -66,6 +66,9 @@ out/
 tasks/*/upstream_cache/
 tasks/*/.forge-cache/
 
+# Fleet auditor + judge intermediate outputs (large, regenerable, never submitted directly)
+runs/
+
 # Generated receipts (kept in receipts/published/ when official)
 receipts/scratch/
 receipts/local/
