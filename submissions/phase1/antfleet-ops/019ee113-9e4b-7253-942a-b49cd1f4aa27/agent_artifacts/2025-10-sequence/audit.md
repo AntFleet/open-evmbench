@@ -1,0 +1,53 @@
+# Audit: 2025-10-sequence
+
+# Security Audit Findings
+
+## Cumulative usage limit bypass via missing array write-back
+- Location: `src/extensions/sessions/explicit/PermissionValidator.sol` : `validatePermission`
+- Mechanism: For `cumulative` rules the code does `usageLimit = newUsageLimits[j]` (or constructs a fresh struct) and then mutates `usageLimit.usageAmount = value256`, but **never writes the struct back into `newUsageLimits[j]`**. The subsequent comparison correctly uses the updated `value`, so the validation passes, but the in-memory `newUsageLimits` array that is bubbled up to `_validateLimitUsageIncrement` still contains the *previous* `usageAmount` (zero for a new hash, or the pre-call value for an existing hash). `_validateLimitUsageIncrement` hashes that stale array, the user crafts the `incrementUsageLimit` calldata to match, and `setLimitUsage` then writes the stale value into storage.
+- Impact: Cumulative rate-limits and per-rule cumulative caps are completely bypassed across payloads. A session whose only rule is `cumulative <= N` can be exercised an arbitrary number of times; each subsequent payload re-reads the unchanged (zero/old) usage from storage and the comparison `previousUsage + value <= N` always holds. Token/ETH allowances and other cumulative limits enforced via this code path are therefore unenforceable.
+
+## Estimator burns the wallet's nonce
+- Location: `src/Estimator.sol` : `estimate`
+- Mechanism: `estimate` calls `_consumeNonce(decoded.space, readNonce(decoded.space))` *before* simulating anything. `_consumeNonce` advances the on-chain nonce via `Storage.writeBytes32Map`. Because the estimator is a normal stateful entry-point (it also performs `LibOptim.call/delegatecall`), every successful gas estimation permanently increments the nonce of the space the payload targets. There is no mechanism to roll it back.
+- Impact: Any user (or adversary with a valid signature) can call `estimate` on the *next* validly signed payload and brick the wallet's next transaction by forcing a `BadNonce` revert on the real `execute`. This is a denial-of-service against the wallet: legitimate off-chain flows that "estimate then execute" are broken, and a malicious relayer can grief users by repeatedly estimating payloads. The fix is to not consume the nonce in the estimator (e.g., pass the expected nonce to the signature check without persisting it, or run the body in a transient/revertible manner).
+
+## Unbounded growth of recovery queue storage
+- Location: `src/extensions/recovery/Recovery.sol` : `queuePayload`
+- Mechanism: `queuePayload` is `external` with no access control and no rate limit. Each successful call appends to `queuedPayloadHashes[_wallet][_signer]` and sets `timestampForQueuedPayload[_wallet][signer][payloadHash]`. There is no dequeue/eviction function, and nothing prevents a caller who knows a valid recovery signature from repeatedly enqueuing distinct (or recycled) payloads. A single `(wallet, signer)` pair can have the array grown without bound.
+- Impact: Storage bloat that eventually makes any operation reading or iterating the queue exceed the block gas limit (effectively bricking recovery for that wallet). Combined with the fact that an attacker only needs *one* valid `signer` to be able to queue, this turns the recovery flow into a cheap griefing primitive.
+
+## `Guest.fallback` dispatches arbitrary calls without any authentication
+- Location: `src/Guest.sol` : `fallback` / `_dispatchGuest`
+- Mechanism: The fallback decodes `msg.data` as a `Payload` and immediately runs `_dispatchGuest`, which performs plain `LibOptim.call`s to attacker-chosen targets with attacker-chosen `value`, gas, calldata and `delegateCall`/error behaviour. There is no signature check, no caller check, no `onlySelf`, and no `nonReentrant`. Unlike the proxy, the guest does not require a "hook" entry in storage - any call to the contract with the right calldata prefix is executed.
+- Impact: If a `Guest` is ever deployed with any balance, or is wired into any system that trusts its actions, an attacker can drain it / use it as a generic meta-tx relay. The fact that `delegateCall` is explicitly rejected inside the loop does not mitigate the more general issue that *any* EOA or contract can fully drive the guest at will. Either this contract is meant to be deployed behind a parent that authorizes calls (in which case the parent check is missing), or every guest is a free-for-all dispatcher.
+
+## `Estimator._isValidImage` unconditionally returns `true`
+- Location: `src/Estimator.sol` : `_isValidImage`
+- Mechanism: The override calls `super._isValidImage(_imageHash)` (which performs the real check, e.g. against the stored Stage2 image hash) and then discards the result, returning `true`. Because `signatureValidation` consults `_isValidImage` to decide whether the recovered image hash is acceptable, every signature processed by the estimator is treated as valid, irrespective of the wallet's current configuration.
+- Impact: The estimator is not a wallet and cannot move funds, so the direct impact is limited. However, any off-chain code or relayer that uses `Estimator` to pre-validate a signature will accept signatures for image hashes that the real wallet would reject (e.g., an outdated, revoked, or never-valid configuration). Combined with the nonce-burn above, this makes the estimator unsafe to use as a pre-flight check.
+
+## `BaseSig.recoverBranch` credits weight even when `ecrecover` returns `address(0)`
+- Location: `src/modules/auth/BaseSig.sol` : `recoverBranch` (FLAG_SIGNATURE_HASH / FLAG_SIGNATURE_ETH_SIGN)
+- Mechanism: After `addr = ecrecover(...)` the code does `weight += addrWeight` and `node = _leafForAddressAndWeight(addr, addrWeight)` without checking `addr != address(0)`. An invalid/garbage `r,s,v` recovers to `address(0)`, yet still contributes both weight and a node to the merkle root.
+- Impact: If a signer's image hash happens to contain the zero-address leaf at some position (e.g., as a "burner" sub-tree, or through configuration that pads with zero-address hashes), the attacker can craft a signature with arbitrary `r,s,v` to add that weight and include the corresponding zero-address node, satisfying a threshold that should not have been reachable. In typical configurations the zero address is not part of the configured tree and the merkle root diverges, but any code path that builds an image hash containing `address(0)` is at risk.
+
+## `Recovery.recoverSapientSignatureCompact` recursion depth is unbounded by signature input
+- Location: `src/extensions/recovery/Recovery.sol` : `_recoverBranch`
+- Mechanism: `_recoverBranch` recursively walks `FLAG_BRANCH` sub-trees, and the nesting depth is controlled entirely by the caller-supplied `_signature`. There is no depth cap, and the function is called inside the wallet's `signatureValidation` path, so a deeply nested (or cyclic-via-malformed-bytes) signature can push the EVM call stack until the frame pointer collides with memory.
+- Impact: A malicious sapient signature can be constructed that causes `signatureValidation` (and therefore `execute`/`estimate`) to revert deterministically on-chain for any payload routed through `Recovery`, regardless of who signs. Recovery-mode execution is bricked at the signature-validation stage.
+
+## `SessionSig.recoverConfiguration` allocates `sessionPermissions` from a length heuristic
+- Location: `src/extensions/sessions/SessionSig.sol` : `recoverConfiguration`
+- Mechanism: `maxPermissionsSize = encoded.length / MIN_ENCODED_PERMISSION_SIZE` is used to size `sig.sessionPermissions`, which is then truncated with `mstore(permissions, permissionsCount)` at the end. The intermediate `permissions` memory array, plus the recursion through `FLAG_BRANCH` (which re-runs `recoverConfiguration` on sub-slices and pushes the branch's permissions into the outer array) means a crafted configuration can have a small total length but a large `permissionsCount` once branches are flattened.
+- Impact: The outer allocation may be far smaller than the number of permissions actually flattened into it, leading to out-of-bounds memory writes during the "Push all branch permissions" loop and a deterministic revert. The blast radius is a DoS against any session payload whose configuration includes nested `FLAG_BRANCH` structures of the adversarial shape.
+
+## `Hooks.fallback` performs `delegatecall` to a hook address with no validation
+- Location: `src/modules/Hooks.sol` : `fallback`
+- Mechanism: When `msg.data.length >= 4`, the fallback looks up `_readHook(bytes4(msg.data))` and, if non-zero, `delegatecall`s the full `msg.data` to that address. The hook storage slot is `bytes32(selector) => address`, with the address stored in the low 160 bits. There is no check that the stored value is a contract, no `nonReentrant`, and no allowance/reentrancy guard around the delegatecall.
+- Impact: Although `addHook`/`removeHook` are `onlySelf`, a hook that has already been installed (e.g. during Stage 1) executes arbitrary code in the wallet's storage context on every fallback call. Any code path that lets an attacker invoke a wallet function whose selector is `>= 4` bytes - including the wallet's own `updateImageHash`, `addHook`, `updateImplementation` (via `Implementation`), or any external hook selector - effectively re-enters the wallet at the EVM's maximum privilege. The hook mechanism is therefore a powerful post-compromise amplifier even when the configuration itself is "valid".
+
+## `Payload.fromPackedCalls` does no bounds checking
+- Location: `src/modules/Payload.sol` : `fromPackedCalls`
+- Mechanism: Every field read goes through `LibBytes.readUintX`/`readAddress`/`readBytes32`, which compute `calldataload` at `pointer + offset` without verifying `pointer + width <= packed.length`. `readBytes4` likewise masks the high bits but never checks length. Crafted calldata can therefore return zero/garbage for truncated inputs.
+- Impact: A truncated or over-long payload will decode to a `Decoded` struct containing arbitrary attacker-influenced values (e.g. `calls.length = 0`, or `space`/`nonce` set to attacker-chosen values that happen to satisfy `_consumeNonce`). The downstream code paths in `Calls.execute`, `SessionManager.recoverSapientSignature` and the `Estimator` then make trust decisions on these unchecked values, including a `_consumeNonce` against a potentially attacker-chosen space. While the high-level flow generally reverts before acting on bad state, the missing bounds check is a clear deviation from "garbage in -> revert" and a source of fragile behaviour.
