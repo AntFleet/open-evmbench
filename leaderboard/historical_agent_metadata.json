@@ -1,5 +1,5 @@
 {
-  "$comment": "Backfill of agent.params + agent.prompt_hash for submissions that predate the 2026-06-20 SPEC §3 amendment. Authority: derived from each row's recorded scaffold (fleet.json config + audit.py source) + verified channel-default probing 2026-06-20. NOT applied to the record.json itself (records are signed; integrity is preserved). Applied at board-render time only — see openevmbench/board.py::Attempt.effective_agent_*. Tooltips disclose this backfill so reviewers can audit.",
+  "$comment": "Backfill of agent.params + agent.prompt_hash for submissions that predate the 2026-06-20 SPEC §3 amendment. Authority: derived from each row's recorded scaffold (fleet.json config + audit.py source) + verified channel-default probing 2026-06-20. NOT applied to the record.json itself (records are signed; integrity is preserved). Applied at board-render time only — see openevmbench/board.py::Attempt.agent_params. Tooltips disclose this backfill so reviewers can audit. 2026-06-20 second-pass update: replaced 'api-default' labels with concrete 'on' / 'off' values, derived from per-model probe (presence/absence of non-empty `reasoning` field in HTTP response to a trivial prompt). Per-effort gradation (low/medium/high) is NOT observable on Virtuals; rows that ran without explicit --reasoning-effort show 'on' (reasoning engaged, level unknown) or 'off' (no reasoning emitted). When the record carries 'api-default' but a backfill entry has a more specific value, the board prefers the backfill (override behavior, see board.py).",
   "$last_updated": "2026-06-20",
   "$prompt_hashes": {
     "fleet_auditor_prompt_v1": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
@@ -21,14 +21,14 @@
     "019edb65-5de4-76ca-baf9-9a12f7d501c3": {
       "agent_model": "deepseek-v4-pro",
       "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
-      "params": { "reasoning_effort": "api-default" },
-      "source_of_truth": "oss_fleet/fleet.json row reasoning_effort=null → no reasoning block sent → Virtuals model-side default (probably high since this is a thinking model — see kimi/glm precedent)"
+      "params": { "reasoning_effort": "on" },
+      "source_of_truth": "oss_fleet/fleet.json row reasoning_effort=null → Virtuals model-side default. Probe 2026-06-20: response carries non-empty `reasoning` field (len 43 chars on a trivial 7×8 prompt). Effort gradation (low/medium/high) unobservable on Virtuals → recorded as 'on'. Wall-clock ~11h/117-run confirms reasoning active"
     },
     "019ede4b-5e40-76da-b884-151321e9900b": {
       "agent_model": "qwen/qwen3.7-max",
       "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
       "params": { "reasoning_effort": "api-default" },
-      "source_of_truth": "oss_fleet/fleet.json row reasoning_effort=null → no reasoning block sent → OpenRouter model-side default"
+      "source_of_truth": "oss_fleet/fleet.json row reasoning_effort=null → OpenRouter model-side default. Probe 2026-06-20 failed (Virtuals returned HTTP 500: 'No available providers found'); model is yanked from the catalog so default cannot be re-probed. Left as 'api-default'"
     },
     "019edf58-5a56-77e8-9abc-99a412e36144": {
       "agent_model": "zai-org-glm-5-2",
@@ -45,8 +45,8 @@
     "019ee113-9e4b-7253-942a-b49cd1f4aa27": {
       "agent_model": "minimax-m3",
       "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
-      "params": { "reasoning_effort": "api-default" },
-      "source_of_truth": "oss_fleet/fleet.json row reasoning_effort=null → Virtuals model-side default"
+      "params": { "reasoning_effort": "on" },
+      "source_of_truth": "oss_fleet/fleet.json row reasoning_effort=null → Virtuals model-side default. Probe 2026-06-20: response carries non-empty `reasoning` field (len 21 chars on a trivial 7×8 prompt). Effort gradation unobservable on Virtuals → recorded as 'on'"
     },
     "019ee2c9-9eaa-74dc-827f-b753187f3699": {
       "agent_model": "gpt-5.4",
@@ -63,14 +63,14 @@
     "019ee32d-c4da-759e-a5b5-751c08d160ce": {
       "agent_model": "google-gemini-3-5-flash",
       "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
-      "params": { "reasoning_effort": "api-default" },
-      "source_of_truth": "frontier_models_fleet/fleet.json row reasoning_effort=null → Virtuals model-side default (Flash tier is unlikely thinking-enabled)"
+      "params": { "reasoning_effort": "on" },
+      "source_of_truth": "frontier_models_fleet/fleet.json row reasoning_effort=null → Virtuals model-side default. Probe 2026-06-20: response carries non-empty `reasoning` field (len 220 chars on a trivial 7×8 prompt — verbose 'thinking'). Effort gradation unobservable on Virtuals → recorded as 'on'. Counters prior assumption (Flash tier turns out to ship with reasoning by default on Virtuals)"
     },
     "019ee372-27e9-76a3-b9c3-daadfcd9eb9a": {
       "agent_model": "google-gemini-3-1-pro-preview",
       "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
-      "params": { "reasoning_effort": "api-default" },
-      "source_of_truth": "frontier_models_fleet/fleet.json row reasoning_effort=null → Virtuals model-side default (Pro tier may engage reasoning by default)"
+      "params": { "reasoning_effort": "off" },
+      "source_of_truth": "frontier_models_fleet/fleet.json row reasoning_effort=null → Virtuals model-side default. Probe 2026-06-20: response has NO `reasoning` field at all → default is off. Counters prior assumption (Pro tier ships reasoning OFF by default on Virtuals — paid tier preview likely defaults to fastest response)"
     },
     "019ee380-9612-751b-acfb-5a354c5c72d0": {
       "agent_model": "claude-opus-4-8",
@@ -81,8 +81,14 @@
     "019ee3be-285c-7299-9823-09b0a993664e": {
       "agent_model": "x-ai-grok-4-3",
       "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
-      "params": { "reasoning_effort": "api-default" },
-      "source_of_truth": "frontier_models_fleet/fleet.json row reasoning_effort=null → Virtuals model-side default (no reasoning block sent). 18-minute wall-clock for 40 audits suggests Grok ran without reasoning engaged; reasoning_effort=high+raised max_tokens re-run pending as separate row"
+      "params": { "reasoning_effort": "on" },
+      "source_of_truth": "frontier_models_fleet/fleet.json row reasoning_effort=null → Virtuals model-side default. Probe 2026-06-20: response carries non-empty `reasoning` field (len 2119 chars, encrypted `__ENCRYPTED_REASONING__` prefix on a trivial 7×8 prompt). Effort gradation unobservable on Virtuals → recorded as 'on'. Counters prior assumption (18-min wall-clock had suggested 'off' but probe confirms reasoning IS engaged; Grok just produces dense reasoning fast)"
+    },
+    "019ee3e8-5fd9-7368-a684-cd293b1e775a": {
+      "agent_model": "llama-3-3-70b",
+      "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
+      "params": { "reasoning_effort": "off" },
+      "source_of_truth": "frontier_models_fleet/fleet.json row reasoning_effort=null → Virtuals model-side default. Probe 2026-06-20: response has NO `reasoning` field at all → default is off. Matches Llama-3.3 non-thinking class (Dec 2024). Submission record reads 'api-default' but board renders 'off' via backfill override (records are signed and cannot be edited post-acceptance)"
     }
   }
 }

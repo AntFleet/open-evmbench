@@ -108,11 +108,14 @@ def _operator_link(handle: str, depth: int = 0) -> str:
 def _agent_params_tooltip(a: Attempt) -> str:
     """Hover text for the Reasoning cell.
 
-    Three cases:
+    Four cases:
     - "record": values came from agent.params in the signed record
     - "backfill": values came from leaderboard/historical_agent_metadata.json
                   (record predates the 2026-06-20 SPEC amendment; we still
                   display real values, but disclose the source)
+    - "backfill-override": record said "api-default" (placeholder, not a
+                  value); backfill carries the probed actual default
+                  ("on"/"off") and overrides at render time
     - "missing": nothing recorded and no backfill — render as "?"
     """
     params = a.agent_params
@@ -125,6 +128,10 @@ def _agent_params_tooltip(a: Attempt) -> str:
         return f"{body} (from signed record)"
     if source == "backfill":
         return f"{body} (backfilled from leaderboard/historical_agent_metadata.json; record predates 2026-06-20)"
+    if source == "backfill-override":
+        return (f"{body} (record said reasoning_effort='api-default' — a "
+                f"placeholder; backfill probed actual provider default and "
+                f"overrode at render time)")
     return body
 
 
