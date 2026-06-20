@@ -147,15 +147,21 @@ def _row_html(row: RankedRow, config: BoardConfig, depth: int = 0) -> str:
     cls = ' class="excluded"' if excluded else ""
     tag = '<span class="tag">prize-excluded</span>' if excluded else ""
     prefix = "../" * depth
+    # Column order (2026-06-20 reorg):
+    # Rank, Δ, Operator, Official score, Model, Harness, Scaffold,
+    # Reasoning, Prompt, Judge, Created, Promoted, Submission
+    # ("Tokens total" removed — token counts weren't being tracked
+    # consistently and weren't a useful comparability signal.)
     return (
         f"<tr{cls}><td>#{row.rank}</td><td>{_movement_cell(row.movement)}</td>"
         f"<td>{_operator_link(a.operator, depth)}{tag}</td>"
-        f"<td>{_score_cell(a)}</td><td>{_esc(a.judge_label)}</td>"
+        f"<td>{_score_cell(a)}</td>"
+        f"<td><a href='{prefix}models/{_slug(a.agent_model)}.html'>{_esc(a.agent_model)}</a></td>"
+        f"<td>{_esc(a.harness_kind)}</td>"
+        f"<td><a href='{prefix}scaffolds/{_slug(a.scaffold_name)}.html'>{_esc(a.scaffold_name)}</a></td>"
         f"<td title='{_esc(_agent_params_tooltip(a))}'>{_esc(a.agent_reasoning_label)}</td>"
         f"<td title='{_esc(_prompt_hash_tooltip(a))}'>{_esc(a.agent_prompt_label)}</td>"
-        f"<td>{a.tokens_total:,}</td><td>{_esc(a.harness_kind)}</td>"
-        f"<td><a href='{prefix}models/{_slug(a.agent_model)}.html'>{_esc(a.agent_model)}</a></td>"
-        f"<td><a href='{prefix}scaffolds/{_slug(a.scaffold_name)}.html'>{_esc(a.scaffold_name)}</a></td>"
+        f"<td>{_esc(a.judge_label)}</td>"
         f"<td>{_esc(a.created_at[:10])}</td>"
         f"<td>{_esc(a.record.get('promoted_at', '—')[:10])}</td>"
         f"<td><a href='{prefix}{_esc(a.path)}'>record</a></td></tr>"
@@ -165,26 +171,28 @@ def _row_html(row: RankedRow, config: BoardConfig, depth: int = 0) -> str:
 def _reference_rows(config: BoardConfig) -> str:
     rows = []
     for target in config.reference_targets:
-        # Columns: Rank, Δ, Operator, Score, Judge, Reasoning, Prompt,
-        # Tokens, Harness, Model, Scaffold, Created, Promoted, Submission
+        # Columns: Rank, Δ, Operator, Score, Model, Harness, Scaffold,
+        # Reasoning, Prompt, Judge, Created, Promoted, Submission
         rows.append(
             f"<tr class='target'><td>Target</td><td>—</td>"
             f"<td>{_esc(target['label'])} <span class='tag'>reference</span></td>"
-            f"<td>{target['score_pct']}% paper</td><td>—</td>"
+            f"<td>{target['score_pct']}% paper</td>"
+            f"<td>—</td><td>—</td><td>—</td>"  # model, harness, scaffold
             f"<td>—</td><td>—</td>"  # reasoning, prompt
-            f"<td>undisclosed</td>"
-            f"<td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>"
+            f"<td>—</td>"  # judge
+            f"<td>—</td><td>—</td>"  # created, promoted
             f"<td>no Open EVMBench submission</td></tr>"
         )
     return "".join(rows)
 
 
 _BOARD_HEADERS = [
-    "Rank", "Δ", "Operator", "Official score", "Judge",
+    "Rank", "Δ", "Operator", "Official score",
+    "Model", "Harness kind", "Scaffold",
     "Reasoning",  # agent.params.reasoning_effort — "?" if not recorded
     "Prompt",     # short prefix of agent.prompt_hash — "?" if not recorded
-    "Tokens total",
-    "Harness kind", "Model", "Scaffold", "Created", "Promoted", "Submission",
+    "Judge",
+    "Created", "Promoted", "Submission",
 ]
 
 
