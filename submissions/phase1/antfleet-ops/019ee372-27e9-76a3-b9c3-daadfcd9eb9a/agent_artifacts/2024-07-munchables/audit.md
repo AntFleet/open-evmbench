@@ -1,0 +1,6 @@
+# Audit: 2024-07-munchables
+
+## Missing State Update in `transferToUnoccupiedPlot` Causes Data Corruption and Loss of Yield
+- Location: `src/managers/LandManager.sol` : `transferToUnoccupiedPlot`
+- Mechanism: The function allows a user to move their staked munchable to an unoccupied plot if their current plot becomes invalid (e.g., due to landlord unlocking tokens). While the function correctly updates the `plotOccupied` mappings to free the old plot and reserve the new one, it completely fails to update the user's `toilerState[tokenId].plotId` to the new plot ID. Furthermore, it fails to clear the `dirty` flag (which caused the need to move in the first place) and fails to reset `lastToilDate`. 
+- Impact: Because `plotId` is never updated in the `ToilerState`, the user's struct continues to point to the old plot. If another user stakes in the newly-vacated old plot, and the first user subsequently calls `unstakeMunchable()`, it will forcefully evict the *new* user's plot occupation. Additionally, because the `dirty` flag is never set back to `false`, the munchable will permanently be skipped in `_farmPlots` via the `if (_toiler.dirty) continue;` check, rendering the user entirely unable to earn yield unless they fully unstake and restake the asset.
