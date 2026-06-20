@@ -20,7 +20,11 @@
     "model": "llama-3-3-70b",
     "scaffold_name": "oss-fleet-single-shot",
     "scaffold_hash": "sha256:880dd9d03224382e25300e1cbef02e386582a2f7855a34768d877403e8e45b6a",
-    "harness_kind": "single-shot"
+    "harness_kind": "single-shot",
+    "params": {
+      "reasoning_effort": "api-default"
+    },
+    "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343"
   },
   "judge": {
     "model": "gpt-5.5",
