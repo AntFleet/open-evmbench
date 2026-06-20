@@ -77,6 +77,12 @@
       "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
       "params": { "reasoning_effort": "off" },
       "source_of_truth": "frontier_models_fleet/fleet.json row reasoning_effort=null → claude --print without --effort flag → extended thinking OFF (verified by probe 2026-06-20: reasoning_output_tokens absent from session metadata)"
+    },
+    "019ee3be-285c-7299-9823-09b0a993664e": {
+      "agent_model": "x-ai-grok-4-3",
+      "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
+      "params": { "reasoning_effort": "api-default" },
+      "source_of_truth": "frontier_models_fleet/fleet.json row reasoning_effort=null → Virtuals model-side default (no reasoning block sent). 18-minute wall-clock for 40 audits suggests Grok ran without reasoning engaged; reasoning_effort=high+raised max_tokens re-run pending as separate row"
     }
   }
 }
