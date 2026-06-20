@@ -85,6 +85,19 @@ def _parse_judge_params(pairs: list[str]) -> dict:
     return params
 
 
+def _parse_agent_params(pairs: list[str]) -> dict:
+    params: dict = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise ValueError(f"--agent-param must be key=value, got {pair!r}")
+        key, value = pair.split("=", 1)
+        try:
+            params[key] = json.loads(value)
+        except json.JSONDecodeError:
+            params[key] = value
+    return params
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     creds = load_credentials()
     if creds is None:
@@ -92,8 +105,28 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     try:
         judge_params = _parse_judge_params(args.judge_param or [])
+        agent_params = _parse_agent_params(args.agent_param or [])
     except ValueError as e:
         return _die(str(e))
+
+    # Auto-pick scaffold sidecar metadata (SPEC §3 amendment, 2026-06-20).
+    # The auditor writes ``.openevmbench-scaffold-metadata.json`` next to its
+    # output dir. If present AND the operator didn't override via CLI flags,
+    # populate agent.params and agent.prompt_hash automatically.
+    from pathlib import Path as _Path
+    _sidecar_path = _Path(args.agent_outputs).parent / ".openevmbench-scaffold-metadata.json"
+    agent_prompt_hash = args.agent_prompt_hash
+    if _sidecar_path.is_file():
+        try:
+            _sidecar = json.loads(_sidecar_path.read_text(encoding="utf-8"))
+            if not agent_params and _sidecar.get("params"):
+                agent_params = _sidecar["params"]
+                print(f"# loaded agent.params from {_sidecar_path}: {agent_params}")
+            if not agent_prompt_hash and _sidecar.get("prompt_hash"):
+                agent_prompt_hash = _sidecar["prompt_hash"]
+                print(f"# loaded agent.prompt_hash from {_sidecar_path}: {agent_prompt_hash}")
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"# warning: could not read sidecar {_sidecar_path}: {e}")
 
     api_key = os.environ.get(args.api_key_env, "")
     if not api_key:
@@ -125,6 +158,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             scaffold_name=args.scaffold_name,
             scaffold_hash=args.scaffold_hash,
             harness_kind=args.harness_kind,
+            params=agent_params or None,
+            prompt_hash=agent_prompt_hash or None,
         ),
         run_meta=RunMeta(
             tokens_total=args.tokens_total,
@@ -327,6 +362,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--scaffold-name", required=True)
     p.add_argument("--scaffold-hash", required=True, help="sha256:<hex> of the scaffold definition")
     p.add_argument("--harness-kind", required=True, choices=list(constants.HARNESS_KINDS))
+    p.add_argument(
+        "--agent-param", action="append", metavar="KEY=VALUE",
+        help="material agent params that affect comparability (e.g. reasoning_effort=high, "
+             "temperature=0.7). Recorded under agent.params in record.json so leaderboard "
+             "filters can group genuinely-comparable rows.",
+    )
+    p.add_argument(
+        "--agent-prompt-hash", default=None,
+        help="sha256:<hex> of the AUDITOR_PROMPT (or whatever system prompt the scaffold "
+             "uses). Recorded under agent.prompt_hash so leaderboard can require matching "
+             "prompts for fair comparison.",
+    )
     p.add_argument("--affiliation", default=None)
     p.add_argument("--tokens-total", type=int, default=0)
     p.add_argument("--tokens-prompt", type=int, default=0)

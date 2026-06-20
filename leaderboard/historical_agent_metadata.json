@@ -1,0 +1,88 @@
+{
+  "$comment": "Backfill of agent.params + agent.prompt_hash for submissions that predate the 2026-06-20 SPEC §3 amendment. Authority: derived from each row's recorded scaffold (fleet.json config + audit.py source) + verified channel-default probing 2026-06-20. NOT applied to the record.json itself (records are signed; integrity is preserved). Applied at board-render time only — see openevmbench/board.py::Attempt.effective_agent_*. Tooltips disclose this backfill so reviewers can audit.",
+  "$last_updated": "2026-06-20",
+  "$prompt_hashes": {
+    "fleet_auditor_prompt_v1": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
+    "consensus_reference_auditor_prompt_v2": "sha256:d151f4f24f92b3064b77ed001e246b321280bbcd2b613c1489dd491ec8c6ebf8"
+  },
+  "submissions": {
+    "019ec0bf-384e-7166-9887-78f102b83891": {
+      "agent_model": "claude-opus-4-8+gpt-5.5 consensus (dryrun-20260613)",
+      "prompt_hash": "sha256:d151f4f24f92b3064b77ed001e246b321280bbcd2b613c1489dd491ec8c6ebf8",
+      "params": { "reasoning_effort": "off" },
+      "source_of_truth": "consensus_agent.py — HTTP /chat/completions, no reasoning block, no extended-thinking flag"
+    },
+    "019ed936-364b-7183-97f1-affb5227a55f": {
+      "agent_model": "claude-opus-4-8+gpt-5.5 consensus (reference 2026-06-18)",
+      "prompt_hash": "sha256:d151f4f24f92b3064b77ed001e246b321280bbcd2b613c1489dd491ec8c6ebf8",
+      "params": { "reasoning_effort": "off" },
+      "source_of_truth": "consensus_agent.py — HTTP /chat/completions to both Anthropic and OpenAI APIs, no reasoning block, no extended-thinking flag"
+    },
+    "019edb65-5de4-76ca-baf9-9a12f7d501c3": {
+      "agent_model": "deepseek-v4-pro",
+      "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
+      "params": { "reasoning_effort": "api-default" },
+      "source_of_truth": "oss_fleet/fleet.json row reasoning_effort=null → no reasoning block sent → Virtuals model-side default (probably high since this is a thinking model — see kimi/glm precedent)"
+    },
+    "019ede4b-5e40-76da-b884-151321e9900b": {
+      "agent_model": "qwen/qwen3.7-max",
+      "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
+      "params": { "reasoning_effort": "api-default" },
+      "source_of_truth": "oss_fleet/fleet.json row reasoning_effort=null → no reasoning block sent → OpenRouter model-side default"
+    },
+    "019edf58-5a56-77e8-9abc-99a412e36144": {
+      "agent_model": "zai-org-glm-5-2",
+      "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
+      "params": { "reasoning_effort": "low" },
+      "source_of_truth": "oss_fleet/fleet.json row reasoning_effort=\"low\" (explicit — default behavior burned all 32K reasoning tokens, see [[virtuals-glm-5-2-long-prompt-silent-hang]])"
+    },
+    "019ee0c1-a2a7-70c2-9466-ebb7ac622eec": {
+      "agent_model": "gpt-5.5",
+      "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
+      "params": { "reasoning_effort": "medium" },
+      "source_of_truth": "frontier_models_fleet/fleet.json row reasoning_effort=null → codex exec without -c model_reasoning_effort=... → codex CLI default = medium (verified 2026-06-20)"
+    },
+    "019ee113-9e4b-7253-942a-b49cd1f4aa27": {
+      "agent_model": "minimax-m3",
+      "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
+      "params": { "reasoning_effort": "api-default" },
+      "source_of_truth": "oss_fleet/fleet.json row reasoning_effort=null → Virtuals model-side default"
+    },
+    "019ee2c9-9eaa-74dc-827f-b753187f3699": {
+      "agent_model": "gpt-5.4",
+      "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
+      "params": { "reasoning_effort": "medium" },
+      "source_of_truth": "frontier_models_fleet/fleet.json row reasoning_effort=null → codex CLI default = medium"
+    },
+    "019ee2dd-9feb-75cd-ac55-aff950b93d8d": {
+      "agent_model": "moonshotai-kimi-k2-7-code",
+      "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
+      "params": { "reasoning_effort": "low" },
+      "source_of_truth": "oss_fleet/fleet.json row reasoning_effort=\"low\" (explicit cap — same reason as glm-5-2)"
+    },
+    "019ee32d-c4da-759e-a5b5-751c08d160ce": {
+      "agent_model": "google-gemini-3-5-flash",
+      "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
+      "params": { "reasoning_effort": "api-default" },
+      "source_of_truth": "frontier_models_fleet/fleet.json row reasoning_effort=null → Virtuals model-side default (Flash tier is unlikely thinking-enabled)"
+    },
+    "019ee372-27e9-76a3-b9c3-daadfcd9eb9a": {
+      "agent_model": "google-gemini-3-1-pro-preview",
+      "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
+      "params": { "reasoning_effort": "api-default" },
+      "source_of_truth": "frontier_models_fleet/fleet.json row reasoning_effort=null → Virtuals model-side default (Pro tier may engage reasoning by default)"
+    },
+    "019ee380-9612-751b-acfb-5a354c5c72d0": {
+      "agent_model": "claude-opus-4-8",
+      "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
+      "params": { "reasoning_effort": "off" },
+      "source_of_truth": "frontier_models_fleet/fleet.json row reasoning_effort=null → claude --print without --effort flag → extended thinking OFF (verified by probe 2026-06-20: reasoning_output_tokens absent from session metadata)"
+    },
+    "019ee3be-285c-7299-9823-09b0a993664e": {
+      "agent_model": "x-ai-grok-4-3",
+      "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
+      "params": { "reasoning_effort": "api-default" },
+      "source_of_truth": "frontier_models_fleet/fleet.json row reasoning_effort=null → Virtuals model-side default (no reasoning block sent). 18-minute wall-clock for 40 audits suggests Grok ran without reasoning engaged; reasoning_effort=high+raised max_tokens re-run pending as separate row"
+    }
+  }
+}

@@ -109,6 +109,16 @@ class AgentInfo:
     scaffold_name: str
     scaffold_hash: str  # sha256:<hex of the scaffold definition bytes>
     harness_kind: str   # single-shot | retry-loop | agentic-scaffold
+    # Optional — added 2026-06-20 (SPEC §3 amendment in flight). Lets
+    # operators record the model-side reasoning_effort / temperature /
+    # other knobs that control comparability, mirroring how the judge
+    # block tracks judge.params.
+    params: dict[str, Any] | None = None
+    # Optional — sha256 of the AUDITOR_PROMPT (or whatever system prompt
+    # the scaffold uses). Mirrors judge.prompt_hash so leaderboard
+    # filtering can require BOTH same agent prompt AND same judge prompt
+    # for an apples-to-apples comparison group.
+    prompt_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -136,6 +146,29 @@ class SubmissionPackage:
     @property
     def record_path(self) -> Path:
         return self.package_dir / "record.json"
+
+
+def _agent_block(agent: AgentInfo) -> dict[str, Any]:
+    """Serialize the agent block, omitting optional fields when unset.
+
+    Backward compatibility: the four legacy fields (model, scaffold_name,
+    scaffold_hash, harness_kind) always appear, identical to the
+    pre-2026-06-20 schema. The new fields (``params``, ``prompt_hash``)
+    are emitted ONLY if the operator populated them — older records, and
+    new records from runners that haven't been updated yet, omit them so
+    they don't trip the JSON schema validator.
+    """
+    block: dict[str, Any] = {
+        "model": agent.model,
+        "scaffold_name": agent.scaffold_name,
+        "scaffold_hash": agent.scaffold_hash,
+        "harness_kind": agent.harness_kind,
+    }
+    if agent.params:
+        block["params"] = agent.params
+    if agent.prompt_hash:
+        block["prompt_hash"] = agent.prompt_hash
+    return block
 
 
 def per_vulnerability_entries(verdicts: list[VulnerabilityVerdict]) -> list[dict[str, Any]]:
@@ -191,12 +224,7 @@ def build_submitted_record(
             "upstream_commit": constants.UPSTREAM_COMMIT_SHORT,
             "harness_version": constants.HARNESS_VERSION,
         },
-        "agent": {
-            "model": agent.model,
-            "scaffold_name": agent.scaffold_name,
-            "scaffold_hash": agent.scaffold_hash,
-            "harness_kind": agent.harness_kind,
-        },
+        "agent": _agent_block(agent),
         "judge": {
             "model": judge.model,
             "params": judge.params,
