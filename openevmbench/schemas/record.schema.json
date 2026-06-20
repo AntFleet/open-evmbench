@@ -60,7 +60,14 @@
         "model": { "type": "string", "minLength": 1 },
         "scaffold_name": { "type": "string", "minLength": 1 },
         "scaffold_hash": { "$ref": "#/$defs/sha256ref" },
-        "harness_kind": { "enum": ["single-shot", "retry-loop", "agentic-scaffold"] }
+        "harness_kind": { "enum": ["single-shot", "retry-loop", "agentic-scaffold"] },
+        "params": { "type": ["object", "null"] },
+        "prompt_hash": {
+          "oneOf": [
+            { "$ref": "#/$defs/sha256ref" },
+            { "type": "null" }
+          ]
+        }
       }
     },
     "judge": {
