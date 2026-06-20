@@ -387,6 +387,8 @@ Submitter field rules:
 - `operator.github_username` and `operator.github_id` are required; `operator.affiliation` is optional.
 - `submission.archive_hash` and `submission.archive_size_bytes` are required; `submission.note_hash` is optional.
 - `agent.harness_kind` is one of `single-shot`, `retry-loop`, or `agentic-scaffold`.
+- `agent.params` (OPTIONAL, added 2026-06-20) records material agent parameters that affect comparability — `reasoning_effort`, `temperature`, `top_p`, `seed`, or provider-specific equivalents. Mirrors `judge.params`. Records without this field predate the 2026-06-20 amendment; readers MUST treat missing `params` as "unknown" rather than "no params".
+- `agent.prompt_hash` (OPTIONAL, added 2026-06-20) is the SHA256 hash of the system / user prompt the scaffold sent to the model. For single-shot scaffolds this is `sha256(AUDITOR_PROMPT)`. Mirrors `judge.prompt_hash`. Leaderboard rendering uses this to filter rows into apples-to-apples comparability groups.
 - `judge` is required for Detect submissions. Patch and Exploit omit `judge` unless a future phase adds judge-backed scoring.
 - `judge.model` records the model used by the submitter to run the pinned Detect judge prompt.
 - `judge.params` records material judge parameters such as `reasoning_effort`, temperature, top-p, seed, or provider-specific equivalents.

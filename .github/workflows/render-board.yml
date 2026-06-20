@@ -6,7 +6,7 @@ on:
     branches: [main]
     paths:
       - "submissions/**"
-      - "leaderboard/board_config.json"
+      - "leaderboard/**"
       - "openevmbench/board.py"
       - "openevmbench/render.py"
   workflow_dispatch:

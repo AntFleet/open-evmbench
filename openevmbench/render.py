@@ -105,6 +105,42 @@ def _operator_link(handle: str, depth: int = 0) -> str:
     return f'<a href="{"../" * depth}operators/{_slug(handle)}.html">@{_esc(handle)}</a>'
 
 
+def _agent_params_tooltip(a: Attempt) -> str:
+    """Hover text for the Reasoning cell.
+
+    Three cases:
+    - "record": values came from agent.params in the signed record
+    - "backfill": values came from leaderboard/historical_agent_metadata.json
+                  (record predates the 2026-06-20 SPEC amendment; we still
+                  display real values, but disclose the source)
+    - "missing": nothing recorded and no backfill — render as "?"
+    """
+    params = a.agent_params
+    source = a.agent_params_source
+    if params is None:
+        return ("agent.params not recorded and no backfill available "
+                "(record predates 2026-06-20 schema amendment)")
+    body = "; ".join(f"{k}={v}" for k, v in sorted(params.items()))
+    if source == "record":
+        return f"{body} (from signed record)"
+    if source == "backfill":
+        return f"{body} (backfilled from leaderboard/historical_agent_metadata.json; record predates 2026-06-20)"
+    return body
+
+
+def _prompt_hash_tooltip(a: Attempt) -> str:
+    h = a.agent_prompt_hash
+    source = a.agent_prompt_hash_source
+    if not h:
+        return ("agent.prompt_hash not recorded and no backfill available "
+                "(record predates 2026-06-20 schema amendment)")
+    if source == "record":
+        return f"{h} (from signed record)"
+    if source == "backfill":
+        return f"{h} (backfilled from leaderboard/historical_agent_metadata.json; record predates 2026-06-20)"
+    return h
+
+
 def _row_html(row: RankedRow, config: BoardConfig, depth: int = 0) -> str:
     a = row.attempt
     excluded = a.is_prize_excluded(config)
@@ -115,6 +151,8 @@ def _row_html(row: RankedRow, config: BoardConfig, depth: int = 0) -> str:
         f"<tr{cls}><td>#{row.rank}</td><td>{_movement_cell(row.movement)}</td>"
         f"<td>{_operator_link(a.operator, depth)}{tag}</td>"
         f"<td>{_score_cell(a)}</td><td>{_esc(a.judge_label)}</td>"
+        f"<td title='{_esc(_agent_params_tooltip(a))}'>{_esc(a.agent_reasoning_label)}</td>"
+        f"<td title='{_esc(_prompt_hash_tooltip(a))}'>{_esc(a.agent_prompt_label)}</td>"
         f"<td>{a.tokens_total:,}</td><td>{_esc(a.harness_kind)}</td>"
         f"<td><a href='{prefix}models/{_slug(a.agent_model)}.html'>{_esc(a.agent_model)}</a></td>"
         f"<td><a href='{prefix}scaffolds/{_slug(a.scaffold_name)}.html'>{_esc(a.scaffold_name)}</a></td>"
@@ -127,10 +165,14 @@ def _row_html(row: RankedRow, config: BoardConfig, depth: int = 0) -> str:
 def _reference_rows(config: BoardConfig) -> str:
     rows = []
     for target in config.reference_targets:
+        # Columns: Rank, Δ, Operator, Score, Judge, Reasoning, Prompt,
+        # Tokens, Harness, Model, Scaffold, Created, Promoted, Submission
         rows.append(
             f"<tr class='target'><td>Target</td><td>—</td>"
             f"<td>{_esc(target['label'])} <span class='tag'>reference</span></td>"
-            f"<td>{target['score_pct']}% paper</td><td>—</td><td>undisclosed</td>"
+            f"<td>{target['score_pct']}% paper</td><td>—</td>"
+            f"<td>—</td><td>—</td>"  # reasoning, prompt
+            f"<td>undisclosed</td>"
             f"<td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>"
             f"<td>no Open EVMBench submission</td></tr>"
         )
@@ -138,7 +180,10 @@ def _reference_rows(config: BoardConfig) -> str:
 
 
 _BOARD_HEADERS = [
-    "Rank", "Δ", "Operator", "Official score", "Judge", "Tokens total",
+    "Rank", "Δ", "Operator", "Official score", "Judge",
+    "Reasoning",  # agent.params.reasoning_effort — "?" if not recorded
+    "Prompt",     # short prefix of agent.prompt_hash — "?" if not recorded
+    "Tokens total",
     "Harness kind", "Model", "Scaffold", "Created", "Promoted", "Submission",
 ]
 

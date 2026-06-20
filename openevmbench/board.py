@@ -32,6 +32,38 @@ from openevmbench.signing import SignatureError, verify_record
 logger = logging.getLogger(__name__)
 
 
+def _load_historical_agent_metadata() -> dict[str, Any]:
+    """Load the presentation-layer backfill for agent.params/prompt_hash.
+
+    SPEC §3 amendment 2026-06-20 added optional ``agent.params`` and
+    ``agent.prompt_hash`` to record.json. Records that predate the
+    amendment lack these fields. Since records are signed (acceptance
+    signature), we DO NOT modify them — instead this map provides
+    render-time values, and tooltips disclose that the values are
+    backfilled rather than recorded.
+
+    File: ``leaderboard/historical_agent_metadata.json`` at the repo
+    root. Returns an empty dict if missing, so tests that don't care
+    about this map keep working.
+    """
+    candidates = [
+        Path("leaderboard/historical_agent_metadata.json"),
+        Path(__file__).resolve().parent.parent / "leaderboard" / "historical_agent_metadata.json",
+    ]
+    for path in candidates:
+        if path.is_file():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as e:
+                logger.warning("could not parse %s: %s", path, e)
+                return {}
+            return data.get("submissions", {}) if isinstance(data, dict) else {}
+    return {}
+
+
+_HISTORICAL_AGENT_METADATA: dict[str, Any] = _load_historical_agent_metadata()
+
+
 @dataclass(frozen=True)
 class BoardConfig:
     default_judge_model: str = constants.DEFAULT_JUDGE_MODEL
@@ -40,6 +72,12 @@ class BoardConfig:
     prize_excluded_operators: tuple[str, ...] = ()
     reference_targets: tuple[dict[str, Any], ...] = ()
     open_weights_patterns: tuple[str, ...] = ()
+    # SPEC §3 amendment 2026-06-20: optional stricter group that requires
+    # all rows on the default leaderboard to share an agent.prompt_hash
+    # and agent.reasoning_effort. When unset (the default), the board
+    # filters only on judge-group as before — keeps the existing 11
+    # promoted records on the default view.
+    strict_agent_group: dict[str, Any] | None = None
 
     @staticmethod
     def load(path: Path | str) -> "BoardConfig":
@@ -58,6 +96,7 @@ class BoardConfig:
             open_weights_patterns=tuple(
                 p.lower() for p in data.get("open_weights_patterns", [])
             ),
+            strict_agent_group=data.get("strict_agent_group") or None,
         )
 
 
@@ -154,6 +193,98 @@ class Attempt:
         effort = self.judge_params.get("reasoning_effort")
         return f"{self.judge_model}" + (f" ({effort})" if effort else "")
 
+    # --- agent.params / agent.prompt_hash (SPEC §3 amendment 2026-06-20) ---
+    # All four properties consult a presentation-layer backfill map first
+    # (``leaderboard/historical_agent_metadata.json``), then fall back to
+    # values recorded directly in the record. Records that predate the
+    # 2026-06-20 amendment can be displayed with accurate values WITHOUT
+    # modifying the signed record itself. ``backfilled_*`` properties
+    # expose the source so tooltips can disclose it.
+
+    @property
+    def agent_params(self) -> dict[str, Any] | None:
+        """Effective agent.params: record value if recorded, else
+        historical backfill, else None."""
+        agent = self.record.get("agent") or {}
+        params = agent.get("params")
+        if isinstance(params, dict) and params:
+            return params
+        backfill = _HISTORICAL_AGENT_METADATA.get(self.submission_id)
+        if backfill and isinstance(backfill.get("params"), dict):
+            return backfill["params"]
+        return None
+
+    @property
+    def agent_reasoning_effort(self) -> str | None:
+        """Just the reasoning_effort value from agent.params, or None."""
+        params = self.agent_params
+        return params.get("reasoning_effort") if params else None
+
+    @property
+    def agent_params_source(self) -> str:
+        """Where the rendered agent.params came from. Used by tooltip."""
+        agent = self.record.get("agent") or {}
+        params = agent.get("params")
+        if isinstance(params, dict) and params:
+            return "record"
+        if self.submission_id in _HISTORICAL_AGENT_METADATA:
+            return "backfill"
+        return "missing"
+
+    @property
+    def agent_reasoning_label(self) -> str:
+        """Display string for the Reasoning column.
+
+        Distinguishes:
+        - explicit value ("high", "low", "medium") → show it verbatim
+        - "off" / null / "none" → show "off"
+        - "api-default" → show "api-def" (Virtuals/OpenRouter served the
+          model with no reasoning block; the API decides per-model)
+        - no recorded params anywhere → "?"
+        """
+        params = self.agent_params
+        if params is None:
+            return "?"
+        effort = params.get("reasoning_effort")
+        if effort in (None, "", "none", "off"):
+            return "off"
+        if effort == "api-default":
+            return "api-def"
+        return str(effort)
+
+    @property
+    def agent_prompt_hash(self) -> str | None:
+        """Effective agent.prompt_hash: record value if recorded, else
+        historical backfill, else None."""
+        agent = self.record.get("agent") or {}
+        h = agent.get("prompt_hash")
+        if h:
+            return h
+        backfill = _HISTORICAL_AGENT_METADATA.get(self.submission_id)
+        if backfill and backfill.get("prompt_hash"):
+            return backfill["prompt_hash"]
+        return None
+
+    @property
+    def agent_prompt_hash_source(self) -> str:
+        agent = self.record.get("agent") or {}
+        if agent.get("prompt_hash"):
+            return "record"
+        if (
+            self.submission_id in _HISTORICAL_AGENT_METADATA
+            and _HISTORICAL_AGENT_METADATA[self.submission_id].get("prompt_hash")
+        ):
+            return "backfill"
+        return "missing"
+
+    @property
+    def agent_prompt_label(self) -> str:
+        h = self.agent_prompt_hash
+        if not h:
+            return "?"
+        # short prefix: "sha256:abc1234"
+        return h[: h.index(":") + 8] if ":" in h else h[:7]
+
     def is_comparable(self, config: BoardConfig) -> bool:
         """In the OpenAI-paper-comparable judge group?"""
         judge = self.record.get("judge")
@@ -166,6 +297,36 @@ class Attempt:
             and judge.get("params", {}).get("temperature", 1) == 1
             and judge.get("prompt_hash") == f"sha256:{constants.JUDGE_PROMPT_SHA256}"
         )
+
+    def is_strictly_comparable(self, config: BoardConfig) -> bool:
+        """Stricter group: same judge AND same agent prompt_hash AND
+        same agent reasoning_effort.
+
+        Added 2026-06-20 with the agent.params / agent.prompt_hash SPEC
+        amendment. Defaults to ``is_comparable`` semantics when no
+        ``strict_agent_group`` constraint is configured (so old boards
+        keep working). When `strict_agent_group` IS configured in
+        ``board_config.json``, this is the filter used for the default
+        leaderboard view — rows without recorded agent.params /
+        agent.prompt_hash fall out, which is the right behavior because
+        we can no longer prove they're apples-to-apples.
+        """
+        if not self.is_comparable(config):
+            return False
+        strict = getattr(config, "strict_agent_group", None)
+        if not strict:
+            return True
+        if strict.get("require_agent_prompt_hash"):
+            if not self.agent_prompt_hash:
+                return False
+            if strict.get("agent_prompt_hash") and self.agent_prompt_hash != strict["agent_prompt_hash"]:
+                return False
+        expected = strict.get("agent_reasoning_effort")
+        if expected is not None:
+            actual = self.agent_reasoning_effort
+            if actual != expected:
+                return False
+        return True
 
     def is_prize_excluded(self, config: BoardConfig) -> bool:
         return self.operator.lower() in config.prize_excluded_operators
