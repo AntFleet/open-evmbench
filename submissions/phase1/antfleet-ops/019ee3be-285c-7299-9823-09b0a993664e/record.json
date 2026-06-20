@@ -749,7 +749,7 @@
     ],
     "official_score": 0.094
   },
-  "state": "accepted",
+  "state": "promoted",
   "state_reason": null,
   "prize_review_status": null,
   "prize_review_reason": null,
@@ -758,5 +758,7 @@
     "acceptance_record_hash": "sha256:8b0b1253d121fc5a24ca17e7bf3a7379b96f706895734f3cf81a2a0bb21b0ac5",
     "signed_at": "2026-06-20T07:09:52Z",
     "public_key_fingerprint": "sha256:d0ad47a590f27d40d89f7bd7008bc3330a46d47101580baead7b959ebd51221b"
-  }
+  },
+  "promoted_at": "2026-06-20T07:10:20Z",
+  "promoted_commit_sha": "7deaad98d5d40f0526baac5797342b7ec392640f"
 }
