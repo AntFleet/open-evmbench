@@ -204,14 +204,28 @@ class Attempt:
     @property
     def agent_params(self) -> dict[str, Any] | None:
         """Effective agent.params: record value if recorded, else
-        historical backfill, else None."""
+        historical backfill, else None.
+
+        Exception: when the record says ``reasoning_effort="api-default"``
+        (a placeholder label, not a value) AND a backfill entry has a
+        more specific value, prefer the backfill — it carries the
+        probed actual default ("on"/"off"/"high"/etc.).
+        """
         agent = self.record.get("agent") or {}
         params = agent.get("params")
-        if isinstance(params, dict) and params:
-            return params
         backfill = _HISTORICAL_AGENT_METADATA.get(self.submission_id)
-        if backfill and isinstance(backfill.get("params"), dict):
-            return backfill["params"]
+        backfill_params = (
+            backfill.get("params") if backfill and isinstance(backfill.get("params"), dict) else None
+        )
+        if isinstance(params, dict) and params:
+            recorded_effort = params.get("reasoning_effort")
+            if recorded_effort == "api-default" and backfill_params:
+                bf_effort = backfill_params.get("reasoning_effort")
+                if bf_effort and bf_effort != "api-default":
+                    return backfill_params
+            return params
+        if backfill_params:
+            return backfill_params
         return None
 
     @property
@@ -225,7 +239,16 @@ class Attempt:
         """Where the rendered agent.params came from. Used by tooltip."""
         agent = self.record.get("agent") or {}
         params = agent.get("params")
+        backfill = _HISTORICAL_AGENT_METADATA.get(self.submission_id)
+        backfill_params = (
+            backfill.get("params") if backfill and isinstance(backfill.get("params"), dict) else None
+        )
         if isinstance(params, dict) and params:
+            recorded_effort = params.get("reasoning_effort")
+            if recorded_effort == "api-default" and backfill_params:
+                bf_effort = backfill_params.get("reasoning_effort")
+                if bf_effort and bf_effort != "api-default":
+                    return "backfill-override"
             return "record"
         if self.submission_id in _HISTORICAL_AGENT_METADATA:
             return "backfill"
@@ -237,9 +260,13 @@ class Attempt:
 
         Distinguishes:
         - explicit value ("high", "low", "medium") → show it verbatim
+        - "on" → reasoning confirmed engaged but effort gradation
+          unobservable (e.g., Virtuals doesn't expose `reasoning_effort`
+          per-call; backfill set by probing for non-empty `reasoning`
+          field on a trivial prompt)
         - "off" / null / "none" → show "off"
-        - "api-default" → show "api-def" (Virtuals/OpenRouter served the
-          model with no reasoning block; the API decides per-model)
+        - "api-default" → show "api-def" (no probe data; provider's
+          default kicks in but exact behavior wasn't verified)
         - no recorded params anywhere → "?"
         """
         params = self.agent_params

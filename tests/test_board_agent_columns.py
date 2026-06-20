@@ -185,6 +185,46 @@ def test_api_default_renders_as_api_def(monkeypatch) -> None:
     assert a.agent_reasoning_label == "api-def"
 
 
+def test_backfill_overrides_when_record_says_api_default(monkeypatch) -> None:
+    """When the signed record carries ``reasoning_effort="api-default"``
+    (a placeholder, not a value) AND a backfill entry has a more specific
+    value (probed from the provider), prefer the backfill — this lets us
+    correct ``api-default`` displays after acceptance without re-signing
+    a record."""
+    from openevmbench import board as board_mod
+
+    record = _base_record({
+        "params": {"reasoning_effort": "api-default"},
+        "prompt_hash": "sha256:fromrecord",
+    })
+    record["submission_id"] = "api-override-test"
+    monkeypatch.setattr(board_mod, "_HISTORICAL_AGENT_METADATA", {
+        "api-override-test": {"params": {"reasoning_effort": "off"}},
+    })
+    a = Attempt(record=record, path="x")
+    assert a.agent_reasoning_effort == "off"
+    assert a.agent_reasoning_label == "off"
+    assert a.agent_params_source == "backfill-override"
+    # prompt_hash still comes from record (no backfill prompt_hash given)
+    assert a.agent_prompt_hash == "sha256:fromrecord"
+    assert a.agent_prompt_hash_source == "record"
+
+
+def test_backfill_does_not_override_when_backfill_also_api_default(monkeypatch) -> None:
+    """If both record and backfill say api-default (unknown probe data),
+    keep showing the record value. No override fires."""
+    from openevmbench import board as board_mod
+
+    record = _base_record({"params": {"reasoning_effort": "api-default"}})
+    record["submission_id"] = "no-probe-test"
+    monkeypatch.setattr(board_mod, "_HISTORICAL_AGENT_METADATA", {
+        "no-probe-test": {"params": {"reasoning_effort": "api-default"}},
+    })
+    a = Attempt(record=record, path="x")
+    assert a.agent_reasoning_label == "api-def"
+    assert a.agent_params_source == "record"
+
+
 def test_real_historical_backfill_covers_all_promoted_submissions() -> None:
     """Sanity check on the actual leaderboard/historical_agent_metadata.json:
     every submission_id in submissions/ should either have agent.params
