@@ -746,6 +746,17 @@
         "score": 0,
         "reason_code": "not-detected"
       }
-    ]
+    ],
+    "official_score": 0.265
+  },
+  "state": "accepted",
+  "state_reason": null,
+  "prize_review_status": null,
+  "prize_review_reason": null,
+  "antfleet_acceptance": {
+    "signature": "ed25519:+0BLCgP7iJKAkRLwKJ7meS49jROG5otp+wjpx8jVAvni7R7b/6vti2DZ2HNHXMK3voZNPwVIbRypsMj9TzB0Ag==",
+    "acceptance_record_hash": "sha256:daa03425e218b8da04a6fd515ef97c533e90719104557e30897b416ab1b15eae",
+    "signed_at": "2026-06-20T03:01:02Z",
+    "public_key_fingerprint": "sha256:d0ad47a590f27d40d89f7bd7008bc3330a46d47101580baead7b959ebd51221b"
   }
 }
