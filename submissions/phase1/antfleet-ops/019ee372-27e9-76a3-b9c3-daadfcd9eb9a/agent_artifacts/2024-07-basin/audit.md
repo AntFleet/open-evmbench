@@ -1,0 +1,6 @@
+# Audit: 2024-07-basin
+
+## Broken UUPS Upgradeability in WellUpgradeable due to Minimal Proxy pattern
+- Location: `src/WellUpgradeable.sol` : `_authorizeUpgrade`
+- Mechanism: Wells are deployed via the `Aquifer` contract using the Clones With Immutable Args (CWIA) minimal proxy pattern, which hardcodes the logic implementation address directly into the proxy's runtime bytecode. Because they are immutable proxies, they do not read an implementation address from the ERC1967 storage slot (`_IMPLEMENTATION_SLOT`) during execution, rendering `upgradeTo` useless, as the proxy will permanently delegate to the original logic contract regardless of what is stored in the slot. Additionally, `_authorizeUpgrade` is permanently bricked because `_getImplementation()` returns `address(0)` (since the ERC1967 slot is unset upon clone deployment). This makes `IAquifer(aquifer).wellImplementation(address(0))` return `address(0)`, causing the `require(activeProxy == ___self)` check to always revert on the very first upgrade attempt.
+- Impact: The `WellUpgradeable` contract is permanently incapable of being upgraded. This defeats the entire purpose of the contract and traps protocols into an immutable contract when they expect an upgrade path.

@@ -1,0 +1,6 @@
+# Audit: 2024-12-secondswap
+
+## Improper recalculation of `releaseRate` in `transferVesting` allows partial-grantors to drain the vesting contract
+- Location: `SecondSwap_StepVesting.sol` : `transferVesting` and `claimable`
+- Mechanism: When a user transfers a portion of their vesting allocation to another address (e.g., when a marketplace purchase occurs), the grantor's new release rate is recalculated incorrectly as `grantorVesting.totalAmount / numOfSteps`. This mathematical flaw fails to account for the steps and amounts the grantor has *already* claimed. Because the intermediate claim steps in `claimable()` do not cap the `claimableAmount` against `totalAmount - amountClaimed`, a grantor who has transferred away all of their remaining allocations will still receive a non-zero `releaseRate` and can continue claiming tokens on subsequent vesting steps.
+- Impact: A user could claim a portion of their vesting, list and sell all of their remaining tokens on the marketplace, and then continue querying and claiming token amounts on future vesting steps. This results in the creation of duplicate tokens out of thin air, completely circumventing their allocation and draining the protocol's held tokens for other legitimate users.

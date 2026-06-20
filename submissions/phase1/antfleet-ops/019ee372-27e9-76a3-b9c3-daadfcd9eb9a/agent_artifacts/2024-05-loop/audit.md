@@ -1,0 +1,8 @@
+# Audit: 2024-05-loop
+
+An audit of the codebase has revealed a critical vulnerability related to the incorrect decoding of dynamic ABI types, allowing users to bypass withdrawal restrictions.
+
+## Bypassing Claim Restrictions via Malicious ABI Dynamic Offsets
+- Location: `PrelaunchPoints.sol` : `_decodeUniswapV3Data`
+- Mechanism: The function `claim()` allows users to specify custom swap data (`_data`) intended for the 0x Exchange Proxy to swap their locked ERC20 tokens into ETH. To ensure the swap is legitimate, the contract validates the 0x payload using `_validateData` and `_decodeUniswapV3Data`. However, `_decodeUniswapV3Data` assumes that the dynamic `bytes encodedPath` array will always be located at a fixed offset in the calldata (specifically at `+ 132`). A malicious user can craft an ABI payload where the pointer for `encodedPath` points to a totally different offset (e.g., at the end of the calldata) while placing fake, perfectly valid parameters at the hardcoded static offsets expected by `_decodeUniswapV3Data`. 
+- Impact: Since `PrelaunchPoints` validates the dummy data while the 0x Exchange Proxy decodes and executes using the genuine dynamic offset, an attacker can specify an entirely arbitrary Uniswap V3 path. After the withdrawal deadline (`startClaimDate`), users are supposed to be locked out of withdrawing their tokens directly and forced to convert them into `lpETH`. An attacker can use this exploit to route the 0x trade through an attacker-controlled Uniswap pool, entirely capturing their input LRT tokens into their own pool while returning 0 ETH, successfully withdrawing their tokens and completely bypassing the protocol's lock-in constraints.
