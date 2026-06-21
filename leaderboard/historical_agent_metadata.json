@@ -1,6 +1,6 @@
 {
   "$comment": "Backfill of agent.params + agent.prompt_hash for submissions that predate the 2026-06-20 SPEC §3 amendment. Authority: derived from each row's recorded scaffold (fleet.json config + audit.py source) + verified channel-default probing 2026-06-20. NOT applied to the record.json itself (records are signed; integrity is preserved). Applied at board-render time only — see openevmbench/board.py::Attempt.agent_params. Tooltips disclose this backfill so reviewers can audit. 2026-06-20 second-pass update: replaced 'api-default' labels with concrete 'on' / 'off' values, derived from per-model probe (presence/absence of non-empty `reasoning` field in HTTP response to a trivial prompt). Per-effort gradation (low/medium/high) is NOT observable on Virtuals; rows that ran without explicit --reasoning-effort show 'on' (reasoning engaged, level unknown) or 'off' (no reasoning emitted). When the record carries 'api-default' but a backfill entry has a more specific value, the board prefers the backfill (override behavior, see board.py).",
-  "$last_updated": "2026-06-20",
+  "$last_updated": "2026-06-21",
   "$prompt_hashes": {
     "fleet_auditor_prompt_v1": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
     "consensus_reference_auditor_prompt_v2": "sha256:d151f4f24f92b3064b77ed001e246b321280bbcd2b613c1489dd491ec8c6ebf8"
@@ -89,6 +89,12 @@
       "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
       "params": { "reasoning_effort": "off" },
       "source_of_truth": "frontier_models_fleet/fleet.json row reasoning_effort=null → Virtuals model-side default. Probe 2026-06-20: response has NO `reasoning` field at all → default is off. Matches Llama-3.3 non-thinking class (Dec 2024). Submission record reads 'api-default' but board renders 'off' via backfill override (records are signed and cannot be edited post-acceptance)"
+    },
+    "019ee9f9-23e8-7006-b38c-7303337339d0": {
+      "agent_model": "composer-2.5",
+      "prompt_hash": "sha256:ce3e260ca2f398b82268a6e768455d8807cea277af624c15c3c4c6b8869e4343",
+      "params": { "reasoning_effort": "off" },
+      "source_of_truth": "cursor_fleet/fleet.json — Cursor CLI `agent -p --model composer-2.5`; record has prompt_hash but no agent.params; no reasoning_effort surface on agent transport (2026-06-21)"
     }
   }
 }
