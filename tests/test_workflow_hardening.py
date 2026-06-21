@@ -40,5 +40,5 @@ def test_pull_request_workflows_have_submission_diff_allowlist():
         assert "permissions: {}" in text, path
         assert "prepare:" in text, path
         assert "pr-touches-non-submission-files" in text, path
-        assert "submissions/phase1/" in text, path
+        assert "submissions/phase[123]/" in text, path
         assert "git diff --name-only" in text or "gh pr view" in text, path

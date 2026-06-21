@@ -27,10 +27,10 @@ from openevmbench import constants
 from openevmbench.accept import accept, promote, reject, yank
 from openevmbench.checks import check_package, find_submission_dir
 from openevmbench.config import Credentials, load_credentials, save_credentials
-from openevmbench.dataset import DatasetError, load_detect_dataset
+from openevmbench.dataset import DatasetError, load_detect_dataset, load_patch_dataset
 from openevmbench.judge import OpenAICompatibleJudgeClient
 from openevmbench.package import AgentInfo, JudgeInfo, OperatorInfo, RunMeta
-from openevmbench.runner import run_detect
+from openevmbench.runner import run_detect, run_patch
 from openevmbench.signing import generate_keypair, verify_record
 from openevmbench.upstream import ensure_upstream
 
@@ -103,6 +103,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     if creds is None:
         return _die("not logged in — run `openevmbench login <token>` first")
 
+    if args.mode == "patch":
+        return _cmd_run_patch(args, creds)
+    return _cmd_run_detect(args, creds)
+
+
+def _cmd_run_detect(args: argparse.Namespace, creds: Credentials) -> int:
     try:
         judge_params = _parse_judge_params(args.judge_param or [])
         agent_params = _parse_agent_params(args.agent_param or [])
@@ -181,6 +187,63 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_run_patch(args: argparse.Namespace, creds: Credentials) -> int:
+    try:
+        agent_params = _parse_agent_params(args.agent_param or [])
+    except ValueError as e:
+        return _die(str(e))
+
+    dataset = load_patch_dataset(args.upstream)
+    sources_dir = Path(args.sources) if args.sources else None
+    if sources_dir is not None and not sources_dir.is_dir():
+        return _die(f"sources dir not found: {sources_dir}")
+
+    tokens_per_task = (
+        [int(t) for t in args.tokens_per_task.split(",")] if args.tokens_per_task else []
+    )
+    result = run_patch(
+        dataset=dataset,
+        agent_outputs_dir=args.agent_outputs,
+        sources_dir=sources_dir,
+        upstream_repo_dir=args.upstream,
+        operator=OperatorInfo(
+            github_username=creds.github_username,
+            github_id=creds.github_id,
+            affiliation=args.affiliation,
+        ),
+        agent=AgentInfo(
+            model=args.model,
+            scaffold_name=args.scaffold_name,
+            scaffold_hash=args.scaffold_hash,
+            harness_kind=args.harness_kind,
+            params=agent_params or None,
+            prompt_hash=args.agent_prompt_hash or None,
+        ),
+        run_meta=RunMeta(
+            tokens_total=args.tokens_total,
+            tokens_prompt=args.tokens_prompt,
+            tokens_completion=args.tokens_completion,
+            tokens_per_task=tokens_per_task,
+            wall_clock_ms=args.wall_clock_ms,
+            runs_count=args.runs_count,
+        ),
+        submissions_root=args.out,
+        skip_invariant=not args.with_invariant,
+    )
+    record = result.package.record
+    pct = record["score"]["claimed_score"] * 100
+    print(f"claimed score: {pct:.1f}%  {result.solved_count}/{record['score']['max_score']}")
+    print(f"package: {result.package.package_dir}")
+    if sources_dir is None:
+        print("note: no --sources provided; diffs copied but not graded (reason_code=not-graded)")
+    elif args.skip_invariant:
+        print("note: graded with --skip-invariant (host forge); Docker worker required for acceptance parity")
+    for warning in result.validation.warnings:
+        print(f"warning: {warning}")
+    print("next: openevmbench submit --package", result.package.package_dir)
+    return 0
+
+
 def cmd_submit(args: argparse.Namespace) -> int:
     package_dir = Path(args.package)
     repo_root = Path(args.repo_root).resolve()
@@ -190,7 +253,17 @@ def cmd_submit(args: argparse.Namespace) -> int:
         return _die(f"package {package_dir} is not inside repo root {repo_root}")
 
     try:
-        dataset = load_detect_dataset(args.upstream)
+        phase = int(package_rel.split("/")[1].replace("phase", ""))
+    except (IndexError, ValueError):
+        return _die(f"cannot infer phase from package path {package_rel!r}")
+
+    try:
+        if phase == 1:
+            dataset = load_detect_dataset(args.upstream)
+        elif phase == 2:
+            dataset = load_patch_dataset(args.upstream)
+        else:
+            return _die(f"unsupported submission phase {phase}")
     except DatasetError as e:
         return _die(f"cannot load pinned upstream cache for local validation: {e}")
 
@@ -203,11 +276,12 @@ def cmd_submit(args: argparse.Namespace) -> int:
 
     print("local validation passed")
     branch = f"submission/{package_rel.split('/')[-2]}-{package_rel.split('/')[-1][:13]}"
+    phase_label = "Detect" if phase == 1 else "Patch"
     print("\nPR-ready package. To submit:")
     print(f"  git checkout -b {branch}")
     print(f"  git add {package_rel}")
-    print(f'  git commit -m "Phase 1 Detect submission {package_rel.split("/")[-1]}"')
-    print(f"  gh pr create --repo {args.repo} --title \"Phase 1 Detect submission\" --fill")
+    print(f'  git commit -m "Phase {phase} {phase_label} submission {package_rel.split("/")[-1]}"')
+    print(f"  gh pr create --repo {args.repo} --title \"Phase {phase} {phase_label} submission\" --fill")
     return 0
 
 
@@ -252,20 +326,27 @@ def cmd_check_pr(args: argparse.Namespace) -> int:
     package_rel, report = find_submission_dir(changed)
     if report.ok and package_rel:
         try:
-            dataset = load_detect_dataset(args.upstream)
+            phase = int(package_rel.split("/")[1].replace("phase", ""))
+            if phase == 1:
+                dataset = load_detect_dataset(args.upstream)
+            elif phase == 2:
+                dataset = load_patch_dataset(args.upstream)
+            else:
+                report.fail("record-invalid", f"unsupported submission phase {phase}")
+                dataset = None
         except DatasetError as e:
             report.fail("upstream-cache-invalid", str(e))
-            print(report.summary())
-            return 1
-        pkg_report = check_package(
-            args.repo_root,
-            package_rel,
-            pr_author=args.pr_author,
-            pr_author_id=args.pr_author_id,
-            dataset=dataset,
-        )
-        report.failures.extend(pkg_report.failures)
-        report.warnings.extend(pkg_report.warnings)
+            dataset = None
+        if dataset is not None:
+            pkg_report = check_package(
+                args.repo_root,
+                package_rel,
+                pr_author=args.pr_author,
+                pr_author_id=args.pr_author_id,
+                dataset=dataset,
+            )
+            report.failures.extend(pkg_report.failures)
+            report.warnings.extend(pkg_report.warnings)
     print(report.summary())
     return 0 if report.ok else 1
 
@@ -349,7 +430,27 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_clone)
 
     p = sub.add_parser("run", help="judge agent outputs locally and package a submission")
-    p.add_argument("--agent-outputs", required=True, help="dir of <audit-id>/audit.md agent reports")
+    p.add_argument(
+        "--mode",
+        choices=("detect", "patch"),
+        default="detect",
+        help="detect: LLM-judged audit reports; patch: deterministic diff grading",
+    )
+    p.add_argument(
+        "--agent-outputs",
+        required=True,
+        help="detect: dir of <audit-id>/audit.md; patch: dir of <audit-id>.diff files",
+    )
+    p.add_argument(
+        "--sources",
+        default=None,
+        help="patch mode: audit_sources/ checkout root for local grading (see fetch_audit_sources.py)",
+    )
+    p.add_argument(
+        "--with-invariant",
+        action="store_true",
+        help="patch mode: run invariant suite (requires forge pin parity; default skips)",
+    )
     p.add_argument("--upstream", default="upstream/frontier-evals")
     p.add_argument("--harness-dir", default="harness")
     p.add_argument("--out", default="submissions")

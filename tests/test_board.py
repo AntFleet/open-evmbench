@@ -213,6 +213,34 @@ def test_threshold_moments(submissions):
     assert titles["First all-open-weights Detect stack"].operator == "carol"
 
 
+def test_patch_threshold_moments(tmp_path):
+    from openevmbench.constants import PATCH_HARNESS_VERSION
+
+    root = tmp_path / "submissions"
+    record = make_record(
+        sid_suffix="patch1",
+        operator="alice",
+        passed=[True] * 18 + [False] * 26,
+        tokens=100,
+        promoted_at="2026-06-10T00:00:00Z",
+        harness_version=PATCH_HARNESS_VERSION,
+    )
+    record["phase"] = 2
+    record["mode"] = "patch"
+    record["judge"] = None
+    record["score"]["max_score"] = 44
+    record["score"]["solved_count"] = 18
+    record["score"]["official_score"] = 18 / 44
+    d = root / "phase2" / record["operator"]["github_username"] / record["submission_id"]
+    d.mkdir(parents=True)
+    (d / "record.json").write_text(json.dumps(record))
+
+    attempts = load_attempts(root, public_key_path=None)
+    titles = {m.title: m for m in threshold_moments(attempts, CONFIG, phase=2)}
+    assert titles["First promoted Patch submission"].operator == "alice"
+    assert "First to clear the published Patch SOTA (41.5%)" not in titles
+
+
 def test_score_history_and_per_model(submissions):
     attempts = load_attempts(submissions, public_key_path=None)
     history = best_score_history(attempts, CONFIG)
@@ -239,7 +267,10 @@ def test_render_site(submissions, tmp_path):
     )
 
     index = (out / "index.html").read_text()
-    assert "Claude Opus 4.6" in index and "45.6% paper" in index   # reference target row
+    assert "phase-select" in index and "Phase 2 — Patch" in index
+    assert "Claude Opus 4.6" in index and "45.6% paper" in index   # detect reference
+    assert "GPT-5.3-Codex — Patch SOTA" in index and "41.5% paper" in index
+    assert 'data-phase-panel="patch"' in index
     assert "prize-excluded" in index                                # antfleet marking
     # Bob's submission drops from #1 to #2 as alice's new 2/3 + antfleet land
     # above it — only ▼ surfaces with this fixture. Per-submission movement
@@ -256,9 +287,12 @@ def test_render_site(submissions, tmp_path):
     assert "audit-a:v1" in vuln_index and "@bob" in vuln_index
 
     moments = (out / "moments.html").read_text()
+    assert "Phase 1 Detect" in moments and "Phase 2 Patch" in moments
     assert "all-open-weights" in moments
 
     board = json.loads((out / "data" / "board.json").read_text())
+    assert board["patch_reference_targets"][0]["score_pct"] == 41.5
+    assert board["patch_board"] == []
     # Alice's top row is alice's 2/3 submission (new in window → movement None).
     assert board["default_board"][0]["operator"] == "alice"
     assert board["default_board"][0]["movement"] is None

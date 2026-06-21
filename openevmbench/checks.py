@@ -16,10 +16,10 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
-from openevmbench.dataset import DetectDataset
+from openevmbench.dataset import DetectDataset, PatchDataset
 from openevmbench.hashing import sha256_file, sha256_prefixed
 from openevmbench.package import deterministic_archive
-from openevmbench.validation import validate_phase1_detect
+from openevmbench.validation import validate_phase1_detect, validate_phase2_patch
 
 # Public rejection reason codes.
 PATH_VIOLATION = "path-violation"
@@ -39,7 +39,7 @@ MAX_TRANSCRIPT_BYTES = 50 * 1024 * 1024
 MAX_RECORD_BYTES = 1 * 1024 * 1024
 
 _SUBMISSION_PATH_RE = re.compile(
-    r"^submissions/phase1/(?P<handle>[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38})/"
+    r"^submissions/phase(?P<phase>[123])/(?P<handle>[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38})/"
     r"(?P<sid>[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})"
 )
 
@@ -80,17 +80,19 @@ def find_submission_dir(changed_paths: list[str]) -> tuple[str | None, CheckRepo
         if normalized is None:
             report.fail(
                 PATH_VIOLATION,
-                f"{path!r} is outside submissions/phase1/<github_handle>/<submission_id>/",
+                f"{path!r} is outside submissions/phase<N>/<github_handle>/<submission_id>/",
             )
             continue
         m = re.fullmatch(f"{_SUBMISSION_PATH_RE.pattern}/.+", normalized)
         if not m:
             report.fail(
                 PATH_VIOLATION,
-                f"{path!r} is outside submissions/phase1/<github_handle>/<submission_id>/",
+                f"{path!r} is outside submissions/phase<N>/<github_handle>/<submission_id>/",
             )
             continue
-        dirs.add(f"submissions/phase1/{m.group('handle')}/{m.group('sid')}/")
+        dirs.add(
+            f"submissions/phase{m.group('phase')}/{m.group('handle')}/{m.group('sid')}/"
+        )
     if len(dirs) > 1:
         report.fail(PATH_VIOLATION, f"PR touches multiple submission dirs: {sorted(dirs)}")
     if not dirs and not report.failures:
@@ -172,7 +174,11 @@ def _check_transcript_consistency(
             )
 
 
-def _check_vulnerability_ids(record: dict, dataset: DetectDataset, report: CheckReport) -> None:
+def _check_vulnerability_ids(
+    record: dict,
+    dataset: DetectDataset | PatchDataset,
+    report: CheckReport,
+) -> None:
     expected = {v.vulnerability_id for v in dataset.vulnerabilities}
     actual = {
         entry.get("vulnerability_id")
@@ -205,7 +211,7 @@ def check_package(
     package_rel: str,
     pr_author: str | None = None,
     pr_author_id: int | str | None = None,
-    dataset: DetectDataset | None = None,
+    dataset: DetectDataset | PatchDataset | None = None,
 ) -> CheckReport:
     """Run all automated checks on one submission package directory.
 
@@ -224,23 +230,18 @@ def check_package(
         return report
     package_rel = normalized or package_rel
     path_handle, path_sid = m.group("handle"), m.group("sid")
+    path_phase = int(m.group("phase"))
 
     record_path = package_dir / "record.json"
-    transcript_path = package_dir / "judge_transcript.jsonl"
     artifacts_dir = package_dir / "agent_artifacts"
-    for required, code in (
-        (record_path, MISSING_FILE),
-        (transcript_path, MISSING_FILE),
-        (artifacts_dir, MISSING_FILE),
-    ):
-        if not required.exists():
-            report.fail(code, f"missing required {required.relative_to(repo_root)}")
+    if not record_path.is_file():
+        report.fail(MISSING_FILE, f"missing required {record_path.relative_to(repo_root)}")
+    if not artifacts_dir.is_dir():
+        report.fail(MISSING_FILE, f"missing required {artifacts_dir.relative_to(repo_root)}")
     if report.failures:
         return report
 
     if _reject_large_file(record_path, MAX_RECORD_BYTES, report):
-        return report
-    if _reject_large_file(transcript_path, MAX_TRANSCRIPT_BYTES, report):
         return report
 
     try:
@@ -249,7 +250,28 @@ def check_package(
         report.fail(RECORD_INVALID, f"record.json is not valid JSON: {e}")
         return report
 
-    validation = validate_phase1_detect(record)
+    record_phase = record.get("phase")
+    if record_phase != path_phase:
+        report.fail(
+            RECORD_INVALID,
+            f"record phase {record_phase!r} does not match path phase {path_phase}",
+        )
+
+    if path_phase == 1:
+        transcript_path = package_dir / "judge_transcript.jsonl"
+        if not transcript_path.is_file():
+            report.fail(MISSING_FILE, f"missing required {transcript_path.relative_to(repo_root)}")
+        if report.failures:
+            return report
+        if _reject_large_file(transcript_path, MAX_TRANSCRIPT_BYTES, report):
+            return report
+        validation = validate_phase1_detect(record)
+    elif path_phase == 2:
+        validation = validate_phase2_patch(record)
+    else:
+        report.fail(RECORD_INVALID, f"unsupported submission phase {path_phase}")
+        return report
+
     for err in validation.errors:
         report.fail(RECORD_INVALID, err)
     report.warnings.extend(validation.warnings)
@@ -287,23 +309,25 @@ def check_package(
             f"record submission_id {record['submission_id']} does not match path {path_sid}",
         )
 
-    # Stage: transcript hash + declared path.
-    actual_transcript_hash = sha256_file(transcript_path)
-    if record["judge"]["transcript_hash"] != actual_transcript_hash:
-        report.fail(
-            TRANSCRIPT_HASH_MISMATCH,
-            f"judge.transcript_hash {record['judge']['transcript_hash']} != file {actual_transcript_hash}",
-        )
-    expected_rel = f"{package_rel}/judge_transcript.jsonl"
-    if record["judge"]["transcript_contents_or_url"] != expected_rel:
-        report.fail(
-            TRANSCRIPT_PATH_MISMATCH,
-            f"judge.transcript_contents_or_url is {record['judge']['transcript_contents_or_url']!r}, expected {expected_rel!r}",
-        )
+    if path_phase == 1:
+        transcript_path = package_dir / "judge_transcript.jsonl"
+        # Stage: transcript hash + declared path.
+        actual_transcript_hash = sha256_file(transcript_path)
+        if record["judge"]["transcript_hash"] != actual_transcript_hash:
+            report.fail(
+                TRANSCRIPT_HASH_MISMATCH,
+                f"judge.transcript_hash {record['judge']['transcript_hash']} != file {actual_transcript_hash}",
+            )
+        expected_rel = f"{package_rel}/judge_transcript.jsonl"
+        if record["judge"]["transcript_contents_or_url"] != expected_rel:
+            report.fail(
+                TRANSCRIPT_PATH_MISMATCH,
+                f"judge.transcript_contents_or_url is {record['judge']['transcript_contents_or_url']!r}, expected {expected_rel!r}",
+            )
 
-    # Stage: transcript verdict consistency.
-    if not any(f.code == TRANSCRIPT_HASH_MISMATCH for f in report.failures):
-        _check_transcript_consistency(transcript_path, record, report)
+        # Stage: transcript verdict consistency.
+        if not any(f.code == TRANSCRIPT_HASH_MISMATCH for f in report.failures):
+            _check_transcript_consistency(transcript_path, record, report)
 
     # Stage: archive symlink guard.
     _check_archive_symlinks(artifacts_dir, repo_root, report)

@@ -28,6 +28,15 @@ DEFAULT_JUDGE_REASONING_EFFORT = "high"
 PHASE_DETECT = 1
 MODE_DETECT = "detect"
 
+# Phase 2 Patch board (same upstream pin as Detect; separate harness version).
+PHASE_PATCH = 2
+MODE_PATCH = "patch"
+PATCH_HARNESS_VERSION = "patch-v1.0.0+frontier-evals.51052ce"
+PATCH_AUDIT_COUNT = 22
+PATCH_VULN_COUNT = 44
+PATCH_SPLIT = "patch-tasks"
+PATCH_TASKS_FILENAME = "patch_tasks_v1.json"
+
 # Pinned launch acceptance-key fingerprint (SHA256 over antfleet.public_key.pem
 # bytes). Rotation procedure: see docs/KEYS.md. Tests assert the committed
 # public key matches this value, so accidental DEV-key carryover or unintended

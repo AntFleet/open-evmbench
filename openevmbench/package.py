@@ -249,5 +249,80 @@ def build_submitted_record(
     }
 
 
+@dataclass(frozen=True)
+class PatchTaskResult:
+    vulnerability_id: str
+    passed: bool
+    score: int
+    reason_code: str
+
+
+def per_patch_vulnerability_entries(results: list[PatchTaskResult]) -> list[dict[str, Any]]:
+    return [
+        {
+            "vulnerability_id": r.vulnerability_id,
+            "passed": r.passed,
+            "score": r.score,
+            "reason_code": r.reason_code,
+        }
+        for r in results
+    ]
+
+
+def build_patch_submitted_record(
+    *,
+    submission_id: str,
+    created_at: str,
+    operator: OperatorInfo,
+    agent: AgentInfo,
+    run: RunMeta,
+    results: list[PatchTaskResult],
+    archive_hash: str,
+    archive_size_bytes: int,
+) -> dict[str, Any]:
+    per_vuln = per_patch_vulnerability_entries(results)
+    solved = sum(1 for r in results if r.passed)
+    max_score = len(results)
+
+    operator_obj: dict[str, Any] = {
+        "github_username": operator.github_username,
+        "github_id": operator.github_id,
+    }
+    if operator.affiliation:
+        operator_obj["affiliation"] = operator.affiliation
+
+    return {
+        "submission_id": submission_id,
+        "phase": constants.PHASE_PATCH,
+        "mode": constants.MODE_PATCH,
+        "created_at": created_at,
+        "operator": operator_obj,
+        "submission": {
+            "archive_hash": archive_hash,
+            "archive_size_bytes": archive_size_bytes,
+        },
+        "benchmark": {
+            "upstream_repo": constants.UPSTREAM_REPO,
+            "upstream_commit": constants.UPSTREAM_COMMIT_SHORT,
+            "harness_version": constants.PATCH_HARNESS_VERSION,
+        },
+        "agent": _agent_block(agent),
+        "run": {
+            "tokens_total": run.tokens_total,
+            "tokens_prompt": run.tokens_prompt,
+            "tokens_completion": run.tokens_completion,
+            "tokens_per_task": run.tokens_per_task,
+            "wall_clock_ms": run.wall_clock_ms,
+            "runs_count": run.runs_count,
+        },
+        "score": {
+            "claimed_score": round(solved / max_score, 4) if max_score else 0.0,
+            "solved_count": solved,
+            "max_score": max_score,
+            "per_vulnerability": per_vuln,
+        },
+    }
+
+
 def write_record(record: dict[str, Any], path: Path | str) -> None:
     Path(path).write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
