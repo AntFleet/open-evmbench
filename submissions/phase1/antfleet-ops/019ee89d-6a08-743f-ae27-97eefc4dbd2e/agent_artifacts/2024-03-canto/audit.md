@@ -1,0 +1,22 @@
+# Audit: 2024-03-canto
+
+## Missing caller authentication on `lzCompose`
+- Location: contracts/asd/asdRouter.sol : lzCompose
+- Mechanism: `lzCompose` is declared `external payable` with no check that `msg.sender` is the LayerZero endpoint and no check that `_from` is a trusted peer beyond the `whitelistedUSDCVersions[_from]` lookup. The `amountLD` and the entire `composeMsg` (dst receiver, dst EID, asd vault, refund address, min amount) are read straight from the caller-supplied `_message` via `_decodeOFTComposeMsg`. Because LayerZero V2 credits the inbound OFT to this contract in the `lzReceive` transaction but executes the compose in a *separate* transaction, the router transiently holds the delivered whitelisted USDC between those two txs. An attacker can call `lzCompose` directly with `_from` = that whitelisted USDC version, `amountLD` = the router's current balance, and a `composeMsg` whose `_dstReceiver` is the attacker and `_dstLzEid == cantoLzEID`. The router then deposits the victim's tokens into `asdUSDC`, swaps them to NOTE, mints ASD, and `transfer`s the ASD to the attacker.
+- Impact: Any actor can drain whitelisted USDC the router holds — most reliably by front-running legitimate inbound OFT+compose deliveries — redirecting the resulting ASD to themselves and bricking the victim's compose, which then reverts forever because the balance is gone.
+
+## Unvalidated compose routing target (`_cantoAsdAddress`)
+- Location: contracts/asd/asdRouter.sol : _depositNoteToASDVault / _sendASD
+- Mechanism: `_cantoAsdAddress` comes from the caller-controlled `composeMsg` and is never checked against an allowlist of legitimate ASD vaults. `_depositNoteToASDVault` does `IERC20(noteAddress).approve(_asdVault, _amountNote)` and then `_asdVault.call(abi.encodeWithSelector(ASDOFT.mint.selector, _amountNote))` on this arbitrary address; a malicious target's `mint` simply executes `note.transferFrom(router, attacker, _amountNote)` against the fresh allowance and returns success without minting. `lzCompose` reads `successfulDeposit == true` and proceeds to `_sendASD`, which again uses the same unvalidated `_cantoAsdAddress` as both the ERC-20 it `transfer`s to `_dstReceiver` and (cross-chain branch) the target of a value-bearing `IOFT.send` call.
+- Impact: A crafted compose message makes the router grant a NOTE allowance to, and issue an arbitrary `call` from, an attacker-chosen contract, letting that contract pull the router's swapped NOTE (and receive a native-value call) directly.
+
+## No reentrancy guard with attacker-controlled call targets
+- Location: contracts/asd/asdRouter.sol : lzCompose
+- Mechanism: `lzCompose` carries no `nonReentrant` guard yet performs external calls into caller-controlled contracts — `IERC20(_from).approve`/`deposit`, the croc swap, and especially the `_asdVault.call(mint)` in `_depositNoteToASDVault` and the `ASDOFT(_cantoAsdAddress).transfer` / `IOFT.send` in `_sendASD`. While the malicious `_cantoAsdAddress` holds control during the `mint` call, the router still holds the just-swapped NOTE and any other transient balances, so the attacker can re-enter `lzCompose` (permissionless per the finding above) and have those same balances processed a second time before the first invocation finishes.
+- Impact: Re-entrant invocation lets an attacker double-spend the router's transient token balances, compounding the theft enabled by the missing access control.
+
+## `lzCompose` violates its "cannot revert" contract, locking funds
+- Location: contracts/asd/asdRouter.sol : _refundToken (and the direct calls in lzCompose / _sendASD)
+- Mechanism: The function is documented as "Cannot revert anywhere, must send the tokens to the intended receiver if something fails," but several paths use direct (non-`call`) external calls that can revert: `ASDUSDC.deposit` and `IERC20(_from).approve` in `lzCompose`, `ASDOFT(_cantoAsdAddress).transfer` in the canto branch of `_sendASD`, and `IERC20(_tokenAddress).transfer` in `_refundToken`. `_refundToken` is the universal failure handler, so if its transfer reverts — e.g., USDC blacklists the caller-supplied `_cantoRefundAddress`, the address is a non-payable contract for the native `transfer`, or the balance was already removed — the whole compose reverts and the executor can never clear it.
+- Impact: Inbound tokens become permanently stuck in the router, which exposes no admin rescue function, producing a denial-of-service / fund-loss condition triggerable by a blacklisted or non-payable refund address.
+

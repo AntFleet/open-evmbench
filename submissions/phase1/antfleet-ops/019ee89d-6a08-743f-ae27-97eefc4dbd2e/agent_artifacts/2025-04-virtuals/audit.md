@@ -1,0 +1,22 @@
+# Audit: 2025-04-virtuals
+
+## Reward-allocation weight is a manipulable spot pool balance
+- Location: contracts/AgentRewardV3.sol : `getLPValue` / `distributeRewards`
+- Mechanism: `distributeRewards` splits the reward `balance` across virtuals in proportion to `getLPValue(virtualId)`, which returns `IERC20(rewardToken).balanceOf(virtualLP(virtualId).pool)` — the instantaneous reward-token balance of the agent's Uniswap V2 pair, with no TWAP, reserve snapshot, or sync. An attacker staked in a target agent watches the mempool for the `onlyGov` `distributeRewards([...])` call, front-runs it by transferring `rewardToken` straight into that agent's pair (inflating `lpValues[i]` and `totalLPValues`), lets the gov tx snapshot the inflated value into `_rewards`, then back-runs with `IUniswapV2Pair.skim(attacker)` to pull the donated tokens back out. Each agent's slice is then computed as `(lpValues[i] * balance) / totalLPValues` on the inflated weight.
+- Impact: At near-zero net cost an attacker redirects an arbitrary fraction of every reward distribution to an agent they stake in, draining rewards owed to all other agents' stakers and validators.
+
+## Unprotected ServiceNft.updateImpact allows arbitrary impact rewriting
+- Location: contracts/contribution/ServiceNft.sol : `updateImpact`
+- Mechanism: `updateImpact` is `public` with no access control and takes a caller-supplied `virtualId`. It sets `_impacts[proposalId] = _maturities[proposalId] - _maturities[prevServiceId]`, where `prevServiceId = _coreServices[virtualId][_cores[proposalId]]`. By passing a `virtualId` whose core has no registered service, `prevServiceId == 0` and `_maturities[0] == 0`, so the stored impact is overwritten with the service's full absolute maturity instead of the intended delta (inflation); passing the *real* `virtualId` after the service has been registered makes `prevServiceId == proposalId`, forcing the impact to 0 (griefing). These mutated `_impacts`/`_maturities` values are consumed directly by `Minter.mint` (`getImpact(nftId)` → agent tokens minted to the model owner) and by `AgentRewardV2._distributeContributorRewards` (impact-weighted core reward shares).
+- Impact: Anyone can inflate a model contribution's impact to mint excess agent tokens to its owner (bounded only by `maxImpact`) and skew or zero out contributor reward shares, stealing from or griefing other contributors.
+
+## Division-by-zero permanently locks AgentRewardV3 staker/validator claims
+- Location: contracts/AgentRewardV3.sol : `getClaimableStakerRewards` / `getClaimableValidatorRewards` (stored by `_distributeAgentReward`)
+- Mechanism: `_distributeAgentReward` records `totalProposals = IAgentDAO(dao).proposalCount()` and `totalStaked = nft.totalStaked(virtualId)` verbatim with no lower bound, and the claim views divide by both (`stakerReward = (stakerReward * uptime) / agentReward.totalProposals` and `(agentReward.stakerAmount * stakedAmount) / agentReward.totalStaked`). If gov distributes to a virtual whose DAO has zero proposals (e.g. a freshly graduated agent) or zero staked supply, the stored denominator is 0 and every later `claimStakerRewards`/`claimValidatorRewards` reverts once its loop reaches that reward index. Because `claim.rewardCount` only advances on a successful claim and there is no setter to repair a stored `AgentReward`, the poisoned index can never be skipped.
+- Impact: A single distribution to a zero-proposal or zero-stake virtual permanently bricks all current and future staker/validator claims for that virtual, locking those reward tokens in the contract forever.
+
+## Permissionless addValidator enables unbounded-loop reward DoS
+- Location: contracts/virtualPersona/AgentNftV2.sol : `addValidator` (with ValidatorRegistry._addValidator)
+- Mechanism: `addValidator` is `public` with no caller restriction and appends each new address to `_validators[virtualId]`, and the registry exposes no removal function. An attacker calls `addValidator(virtualId, addr)` for an unlimited number of distinct addresses, growing the array arbitrarily. `AgentRewardV2._distributeValidatorRewards` and `AgentNftV2.totalUptimeScore` iterate the entire array (`for i < validatorCount(virtualId)`), so once it is large enough these calls exceed the block gas limit, and the bloat is irreversible.
+- Impact: An attacker can permanently block `distributeRewardsForAgents` (and `totalUptimeScore`) for any targeted agent, locking that agent's validator/staker reward flow as a griefing denial-of-service.
+

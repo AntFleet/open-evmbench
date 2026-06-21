@@ -1,0 +1,17 @@
+# Audit: 2024-03-taiko
+
+## Prover fee can be charged to an arbitrary `coinbase`, draining ERC20 allowances granted to AssignmentHook
+- Location: packages/protocol/contracts/L1/hooks/AssignmentHook.sol : onBlockProposed (and packages/protocol/contracts/L1/libs/LibProposing.sol : proposeBlock)
+- Mechanism: In `LibProposing.proposeBlock`, `params.coinbase` is taken straight from the proposer-supplied `BlockParams` (it only defaults to `msg.sender` when zero) and copied into `meta_.coinbase` with no check that it equals `msg.sender` or otherwise authorized anything. When the fee token is an ERC20, `AssignmentHook.onBlockProposed` pays the prover with `IERC20(assignment.feeToken).safeTransferFrom(_meta.coinbase, _blk.assignedProver, proverFee)`. The prover’s signed assignment binds `feeToken` and `tierFees`, but it does **not** bind the fee *source* (`coinbase`). An attacker therefore sets `coinbase` to any address that holds a standing allowance to the AssignmentHook and acts as their own assigned prover — signing an assignment whose `tierFees[minTier].fee` is arbitrarily large — so the hook pulls the victim’s tokens to the attacker. The only outlay is the liveness bond, which is pulled from (and later returned to) the attacker-prover, not the victim.
+- Impact: A malicious proposer can steal up to the full outstanding ERC20 allowance any address (e.g. another proposer) has granted to AssignmentHook, redirecting it to themselves.
+
+## Replayable signature in TimelockTokenPool.withdraw (no nonce, chainId, or contract binding)
+- Location: packages/protocol/contracts/team/TimelockTokenPool.sol : withdraw(address,bytes)
+- Mechanism: The authorizing message is `keccak256(abi.encodePacked("Withdraw unlocked Taiko token to: ", _to))` with no nonce, deadline, chainId, or contract address. The recipient is `ECDSA.recover`ed and `_withdraw` then pulls the recipient’s cost token via `IERC20(costToken).safeTransferFrom(_recipient, sharedVault, costToWithdraw)` and pushes TKO to `_to`. Because the digest contains only `_to`, one captured signature is replayable by anyone: repeatedly against the same pool as new tokens unlock, and — since the project deploys multiple `TimelockTokenPool` instances (investors, team, grantees) and the signature has no per-pool domain — against every other instance where the same recipient holds a grant.
+- Impact: Any third party holding a recipient’s withdraw signature can force that recipient’s withdrawals and cost-token payments on every pool instance, at attacker-chosen (worst-case) times.
+
+## Proposer can manipulate proof-tier selection via fully predictable block `difficulty`
+- Location: packages/protocol/contracts/L1/libs/LibProposing.sol : proposeBlock
+- Mechanism: `meta_.difficulty = keccak256(abi.encodePacked(block.prevrandao, b.numBlocks, block.number))` and `meta_.minTier = ITierProvider.getMinTier(uint256(meta_.difficulty))`. Every input is known to the proposer at submission time, and the proposer controls whether and in which L1 block to propose each L2 block id. Since `getMinTier` maps the value to a higher tier only on a sparse condition (`rand % 1000 == 0` → SGX+ZKVM on mainnet; `rand % 10 == 0` → SGX on testnet), the proposer can simulate the outcome and simply defer proposing a given block id until an L1 block whose `prevrandao`/`block.number` yields the cheaper tier.
+- Impact: A proposer can systematically evade the probabilistically-required higher-assurance proof tier for the blocks they propose, weakening the protocol’s proof-security sampling guarantee.
+
