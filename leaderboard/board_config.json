@@ -20,6 +20,14 @@
       "primary": false
     }
   ],
+  "patch_reference_targets": [
+    {
+      "label": "GPT-5.3-Codex — Patch SOTA",
+      "reported_by": "OpenAI (EVMbench paper, Table 9)",
+      "score_pct": 41.5,
+      "primary": true
+    }
+  ],
   "open_weights_patterns": [
     "llama", "qwen", "deepseek", "mistral", "mixtral", "gpt-oss", "kimi", "glm", "gemma", "phi-"
   ]

@@ -28,7 +28,6 @@ from openevmbench import constants
 from openevmbench.board import (
     Attempt,
     BoardConfig,
-    Moment,
     RankedRow,
     best_per_model,
     best_score_history,
@@ -54,7 +53,35 @@ a{color:#0b57d0;text-decoration:none}a:hover{text-decoration:underline}
 .up{color:#0a7d33}.down{color:#c0392b}.new{color:#666}
 .tag{font-size:.75rem;border:1px solid #999;border-radius:3px;padding:0 .3rem;margin-left:.4rem}
 nav{margin-bottom:1.5rem}nav a{margin-right:1rem}
+.phase-bar{display:flex;flex-wrap:wrap;align-items:center;gap:.75rem;margin:1rem 0 1.25rem}
+.phase-bar label{font-weight:600}
+.phase-bar select{font:inherit;padding:.25rem .5rem;border:1px solid #bbb;border-radius:4px;background:#fff}
 footer{margin-top:3rem;font-size:.8rem;color:#777}
+"""
+
+_PHASE_JS = """
+function switchPhase(value, pushState) {
+  document.querySelectorAll('[data-phase-panel]').forEach(function(el) {
+    el.hidden = el.dataset.phasePanel !== value;
+  });
+  var sel = document.getElementById('phase-select');
+  if (sel) sel.value = value;
+  document.title = value === 'patch'
+    ? 'Phase 2 Patch — Open EVMBench'
+    : 'Phase 1 Detect — Open EVMBench';
+  if (pushState !== false) {
+    var url = new URL(window.location.href);
+    if (value === 'patch') url.searchParams.set('phase', 'patch');
+    else url.searchParams.delete('phase');
+    history.replaceState(null, '', url);
+  }
+}
+document.addEventListener('DOMContentLoaded', function() {
+  var params = new URLSearchParams(window.location.search);
+  switchPhase(params.get('phase') === 'patch' ? 'patch' : 'detect', false);
+  var sel = document.getElementById('phase-select');
+  if (sel) sel.addEventListener('change', function(e) { switchPhase(e.target.value); });
+});
 """
 
 
@@ -66,19 +93,36 @@ def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9._-]+", "-", value.lower()).strip("-")
 
 
-def _page(title: str, body: str, depth: int = 0) -> str:
+def _page(title: str, body: str, depth: int = 0, *, phase_switcher: bool = False) -> str:
     prefix = "../" * depth
     nav = (
-        f'<nav><a href="{prefix}index.html">Ranked</a><a href="{prefix}all.html">All judges</a>'
+        f'<nav><a href="{prefix}index.html">Board</a>'
+        f'<a href="{prefix}index.html?phase=patch">Patch</a>'
+        f'<a href="{prefix}all.html">All judges</a>'
         f'<a href="{prefix}vulns/index.html">Vulnerabilities</a>'
         f'<a href="{prefix}moments.html">Moments</a><a href="{prefix}history.html">History</a></nav>'
+    )
+    phase_bar = ""
+    extra_script = ""
+    if phase_switcher:
+        phase_bar = (
+            '<div class="phase-bar"><label for="phase-select">Leaderboard</label>'
+            '<select id="phase-select" aria-label="Leaderboard phase">'
+            f'<option value="detect">Phase 1 — Detect ({constants.DETECT_VULN_COUNT} tasks)</option>'
+            f'<option value="patch">Phase 2 — Patch ({constants.PATCH_VULN_COUNT} tasks)</option>'
+            "</select></div>"
+        )
+        extra_script = f"<script>{_PHASE_JS}</script>"
+    footer = (
+        f"Open EVMBench — Detect {_esc(constants.HARNESS_VERSION)} · "
+        f"Patch {_esc(constants.PATCH_HARNESS_VERSION)} — "
+        f"records and signatures inspectable in the public Git log."
     )
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         f"<meta name='viewport' content='width=device-width,initial-scale=1'><title>{_esc(title)}</title>"
-        f"<style>{_CSS}</style></head><body>{nav}<h1>{_esc(title)}</h1>{body}"
-        f"<footer>Open EVMBench — harness {_esc(constants.HARNESS_VERSION)} — "
-        f"records and signatures inspectable in the public Git log.</footer></body></html>"
+        f"<style>{_CSS}</style></head><body>{nav}<h1>{_esc(title)}</h1>{phase_bar}{body}"
+        f"<footer>{footer}</footer>{extra_script}</body></html>"
     )
 
 
@@ -148,17 +192,13 @@ def _prompt_hash_tooltip(a: Attempt) -> str:
     return h
 
 
-def _row_html(row: RankedRow, config: BoardConfig, depth: int = 0) -> str:
+def _row_html(row: RankedRow, config: BoardConfig, depth: int = 0, *, show_judge: bool = True) -> str:
     a = row.attempt
     excluded = a.is_prize_excluded(config)
     cls = ' class="excluded"' if excluded else ""
     tag = '<span class="tag">prize-excluded</span>' if excluded else ""
     prefix = "../" * depth
-    # Column order (2026-06-20 reorg):
-    # Rank, Δ, Operator, Official score, Model, Harness, Scaffold,
-    # Reasoning, Prompt, Judge, Created, Promoted, Submission
-    # ("Tokens total" removed — token counts weren't being tracked
-    # consistently and weren't a useful comparability signal.)
+    judge_cell = f"<td>{_esc(a.judge_label)}</td>" if show_judge else ""
     return (
         f"<tr{cls}><td>#{row.rank}</td><td>{_movement_cell(row.movement)}</td>"
         f"<td>{_operator_link(a.operator, depth)}{tag}</td>"
@@ -168,26 +208,25 @@ def _row_html(row: RankedRow, config: BoardConfig, depth: int = 0) -> str:
         f"<td><a href='{prefix}scaffolds/{_slug(a.scaffold_name)}.html'>{_esc(a.scaffold_name)}</a></td>"
         f"<td title='{_esc(_agent_params_tooltip(a))}'>{_esc(a.agent_reasoning_label)}</td>"
         f"<td title='{_esc(_prompt_hash_tooltip(a))}'>{_esc(a.agent_prompt_label)}</td>"
-        f"<td>{_esc(a.judge_label)}</td>"
+        f"{judge_cell}"
         f"<td>{_esc(a.created_at[:10])}</td>"
         f"<td>{_esc(a.record.get('promoted_at', '—')[:10])}</td>"
         f"<td><a href='{prefix}{_esc(a.path)}'>record</a></td></tr>"
     )
 
 
-def _reference_rows(config: BoardConfig) -> str:
+def _reference_rows(config: BoardConfig, *, show_judge: bool = True) -> str:
     rows = []
+    judge_cell = "<td>—</td>" if show_judge else ""
     for target in config.reference_targets:
-        # Columns: Rank, Δ, Operator, Score, Model, Harness, Scaffold,
-        # Reasoning, Prompt, Judge, Created, Promoted, Submission
         rows.append(
             f"<tr class='target'><td>Target</td><td>—</td>"
             f"<td>{_esc(target['label'])} <span class='tag'>reference</span></td>"
             f"<td>{target['score_pct']}% paper</td>"
-            f"<td>—</td><td>—</td><td>—</td>"  # model, harness, scaffold
-            f"<td>—</td><td>—</td>"  # reasoning, prompt
-            f"<td>—</td>"  # judge
-            f"<td>—</td><td>—</td>"  # created, promoted
+            f"<td>—</td><td>—</td><td>—</td>"
+            f"<td>—</td><td>—</td>"
+            f"{judge_cell}"
+            f"<td>—</td><td>—</td>"
             f"<td>no Open EVMBench submission</td></tr>"
         )
     return "".join(rows)
@@ -196,18 +235,51 @@ def _reference_rows(config: BoardConfig) -> str:
 _BOARD_HEADERS = [
     "Rank", "Δ", "Operator", "Official score",
     "Model", "Harness kind", "Scaffold",
-    "Reasoning",  # agent.params.reasoning_effort — "?" if not recorded
-    "Prompt",     # short prefix of agent.prompt_hash — "?" if not recorded
+    "Reasoning",
+    "Prompt",
     "Judge",
     "Created", "Promoted", "Submission",
 ]
 
+_PATCH_BOARD_HEADERS = [h for h in _BOARD_HEADERS if h != "Judge"]
+
+
+def _board_table(
+    rows: list[RankedRow],
+    config: BoardConfig,
+    *,
+    show_judge: bool = True,
+    depth: int = 0,
+) -> str:
+    headers = _BOARD_HEADERS if show_judge else _PATCH_BOARD_HEADERS
+    table_rows = [_reference_rows(config, show_judge=show_judge)] + [
+        _row_html(r, config, depth, show_judge=show_judge) for r in rows
+    ]
+    return _table(headers, table_rows)
+
+
+def _board_section(
+    phase_key: str,
+    title: str,
+    note: str,
+    rows: list[RankedRow],
+    config: BoardConfig,
+    *,
+    show_judge: bool = True,
+    hidden: bool = False,
+) -> str:
+    body = f"<p>{note}</p>" + _board_table(rows, config, show_judge=show_judge)
+    if not rows:
+        body += "<p><em>No promoted submissions yet.</em></p>"
+    hidden_attr = " hidden" if hidden else ""
+    return (
+        f'<section data-phase-panel="{phase_key}"{hidden_attr}>'
+        f"<h2>{_esc(title)}</h2>{body}</section>"
+    )
+
 
 def _board_page(title: str, rows: list[RankedRow], config: BoardConfig, note: str) -> str:
-    body = f"<p>{note}</p>" + _table(
-        _BOARD_HEADERS,
-        [_reference_rows(config)] + [_row_html(r, config) for r in rows],
-    )
+    body = f"<p>{note}</p>" + _board_table(rows, config)
     if not rows:
         body += "<p><em>No promoted submissions yet.</em></p>"
     return _page(title, body)
@@ -227,23 +299,69 @@ def render_site(
     out.mkdir(parents=True, exist_ok=True)
 
     comparable = with_rank_movement(
-        ranked_rows(attempts, config, comparable_only=True), attempts, config, now
+        ranked_rows(attempts, config, comparable_only=True),
+        attempts,
+        config,
+        now,
+        phase=constants.PHASE_DETECT,
     )
     full = with_rank_movement(
-        ranked_rows(attempts, config, comparable_only=False), attempts, config, now,
+        ranked_rows(attempts, config, comparable_only=False),
+        attempts,
+        config,
+        now,
         comparable_only=False,
+        phase=constants.PHASE_DETECT,
     )
 
-    (out / "index.html").write_text(
-        _board_page(
+    from dataclasses import replace
+
+    patch_config = replace(config, reference_targets=config.patch_reference_targets)
+    patch_rows = with_rank_movement(
+        ranked_rows(attempts, config, comparable_only=False, phase=constants.PHASE_PATCH),
+        attempts,
+        config,
+        now,
+        comparable_only=False,
+        phase=constants.PHASE_PATCH,
+    )
+
+    detect_note = (
+        f"Default view: judge group comparable to the OpenAI paper "
+        f"({_esc(config.default_judge_model)}, reasoning_effort="
+        f"{_esc(config.default_judge_reasoning_effort)}, pinned prompt). "
+        f"One row per accepted submission. "
+        f"Rank Δ is movement over the last {config.rank_window_days} days."
+    )
+    patch_note = (
+        "Patch mode: deterministic diff grading, 44 tasks. "
+        "No LLM judge — scores are directly comparable. "
+        f"Rank Δ is movement over the last {config.rank_window_days} days. "
+        "Submit via <code>docs/SUBMITTING_PATCH.md</code>."
+    )
+    index_body = (
+        _board_section(
+            "detect",
             "Phase 1 Detect — Ranked operators",
+            detect_note,
             comparable,
             config,
-            f"Default view: judge group comparable to the OpenAI paper "
-            f"({_esc(config.default_judge_model)}, reasoning_effort="
-            f"{_esc(config.default_judge_reasoning_effort)}, pinned prompt). "
-            f"One row per accepted submission. "
-            f"Rank Δ is movement over the last {config.rank_window_days} days.",
+        )
+        + _board_section(
+            "patch",
+            "Phase 2 Patch — Ranked operators",
+            patch_note,
+            patch_rows,
+            patch_config,
+            show_judge=False,
+            hidden=True,
+        )
+    )
+    (out / "index.html").write_text(
+        _page(
+            "Open EVMBench — Leaderboard",
+            index_body,
+            phase_switcher=True,
         ),
         encoding="utf-8",
     )
@@ -257,6 +375,15 @@ def render_site(
         ),
         encoding="utf-8",
     )
+
+    if config.patch_reference_targets:
+        (out / "patch.html").write_text(
+            "<!doctype html><html><head><meta charset='utf-8'>"
+            "<meta http-equiv='refresh' content='0;url=index.html?phase=patch'>"
+            "<title>Redirecting…</title></head>"
+            "<body><p><a href='index.html?phase=patch'>Continue to Phase 2 Patch board</a></p></body></html>",
+            encoding="utf-8",
+        )
 
     # --- operator pages ---
     (out / "operators").mkdir(exist_ok=True)
@@ -357,16 +484,26 @@ def render_site(
     )
 
     # --- threshold moments ---
-    moments: list[Moment] = threshold_moments(attempts, config)
-    moment_rows = [
-        f"<tr><td>{m.when.date()}</td><td>{_esc(m.title)}</td>"
-        f"<td>{_operator_link(m.operator)}</td><td><code>{_esc(m.submission_id)}</code></td></tr>"
-        for m in moments
-    ]
+    detect_moments = threshold_moments(attempts, config, phase=constants.PHASE_DETECT)
+    patch_moments = threshold_moments(attempts, config, phase=constants.PHASE_PATCH)
+    moment_sections = []
+    for heading, phase_moments in (
+        ("Phase 1 Detect", detect_moments),
+        ("Phase 2 Patch", patch_moments),
+    ):
+        moment_rows = [
+            f"<tr><td>{m.when.date()}</td><td>{_esc(m.title)}</td>"
+            f"<td>{_operator_link(m.operator)}</td><td><code>{_esc(m.submission_id)}</code></td></tr>"
+            for m in phase_moments
+        ]
+        section = (
+            f"<h2>{heading}</h2>"
+            + (_table(["When", "Milestone", "Operator", "Submission"], moment_rows)
+               if moment_rows else "<p><em>No milestones yet.</em></p>")
+        )
+        moment_sections.append(section)
     (out / "moments.html").write_text(
-        _page("Threshold moments",
-              _table(["When", "Milestone", "Operator", "Submission"], moment_rows)
-              if moment_rows else "<p><em>No milestones yet.</em></p>"),
+        _page("Threshold moments", "".join(moment_sections)),
         encoding="utf-8",
     )
 
@@ -405,10 +542,13 @@ def render_site(
         json.dumps(
             {
                 "harness_version": constants.HARNESS_VERSION,
+                "patch_harness_version": constants.PATCH_HARNESS_VERSION,
                 "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "reference_targets": list(config.reference_targets),
+                "patch_reference_targets": list(config.patch_reference_targets),
                 "default_board": [
                     {
+                        "phase": constants.PHASE_DETECT,
                         "rank": r.rank,
                         "operator": r.attempt.operator,
                         "official_score": r.attempt.official_score,
@@ -425,6 +565,25 @@ def render_site(
                         "submission_id": r.attempt.submission_id,
                     }
                     for r in comparable
+                ],
+                "patch_board": [
+                    {
+                        "phase": constants.PHASE_PATCH,
+                        "rank": r.rank,
+                        "operator": r.attempt.operator,
+                        "official_score": r.attempt.official_score,
+                        "solved_count": r.attempt.solved_count,
+                        "max_score": r.attempt.max_score,
+                        "tokens_total": r.attempt.tokens_total,
+                        "model": r.attempt.agent_model,
+                        "scaffold": r.attempt.scaffold_name,
+                        "harness_kind": r.attempt.harness_kind,
+                        "prize_excluded": r.attempt.is_prize_excluded(config),
+                        "movement": r.movement,
+                        "record": r.attempt.path,
+                        "submission_id": r.attempt.submission_id,
+                    }
+                    for r in patch_rows
                 ],
             },
             indent=2,

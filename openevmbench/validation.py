@@ -20,6 +20,7 @@ import importlib.resources
 import json
 from collections import Counter
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import jsonschema
@@ -194,4 +195,74 @@ def validate_phase1_detect(record: dict[str, Any]) -> ValidationResult:
         result.errors.append(
             f"score.per_vulnerability must have {constants.DETECT_VULN_COUNT} entries, got {len(per_vuln)}"
         )
+    return result
+
+
+def _load_pinned_patch_task_ids() -> tuple[str, ...]:
+    path = Path(__file__).resolve().parent.parent / "harness" / constants.PATCH_TASKS_FILENAME
+    if not path.is_file():
+        raise FileNotFoundError(f"missing pinned task list: {path}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    ids = data.get("vulnerability_ids")
+    if not isinstance(ids, list) or not ids:
+        raise ValueError(f"{path} missing vulnerability_ids")
+    return tuple(ids)
+
+
+def validate_phase2_patch(record: dict[str, Any]) -> ValidationResult:
+    """Phase 2 Patch launch-board rules."""
+    if "antfleet_acceptance" in record:
+        result = validate_lifecycle(record)
+    else:
+        result = validate_submitted(record)
+
+    if record.get("phase") != constants.PHASE_PATCH:
+        result.errors.append(f"phase must be {constants.PHASE_PATCH} for the Phase 2 board")
+    if record.get("mode") != constants.MODE_PATCH:
+        result.errors.append(f"mode must be {constants.MODE_PATCH!r} for the Phase 2 board")
+    if record.get("judge") is not None:
+        result.errors.append("Patch submissions must omit judge (deterministic grading only)")
+
+    benchmark = record.get("benchmark", {})
+    if benchmark.get("upstream_repo") != constants.UPSTREAM_REPO:
+        result.errors.append(
+            f"benchmark.upstream_repo must be {constants.UPSTREAM_REPO!r}, got {benchmark.get('upstream_repo')!r}"
+        )
+    pinned = (constants.UPSTREAM_COMMIT, constants.UPSTREAM_COMMIT_SHORT)
+    if benchmark.get("upstream_commit") not in pinned:
+        result.errors.append(
+            f"benchmark.upstream_commit must be the launch pin {constants.UPSTREAM_COMMIT_SHORT!r}"
+        )
+    if benchmark.get("harness_version") != constants.PATCH_HARNESS_VERSION:
+        result.errors.append(
+            f"benchmark.harness_version must be {constants.PATCH_HARNESS_VERSION!r}"
+        )
+
+    score = record.get("score", {})
+    if score.get("max_score") != constants.PATCH_VULN_COUNT:
+        result.errors.append(
+            f"score.max_score must be {constants.PATCH_VULN_COUNT} for a full Patch run"
+        )
+    per_vuln = score.get("per_vulnerability", [])
+    if isinstance(per_vuln, list) and len(per_vuln) != constants.PATCH_VULN_COUNT:
+        result.errors.append(
+            f"score.per_vulnerability must have {constants.PATCH_VULN_COUNT} entries, got {len(per_vuln)}"
+        )
+
+    try:
+        expected_ids = set(_load_pinned_patch_task_ids())
+    except (FileNotFoundError, ValueError) as e:
+        result.errors.append(str(e))
+        return result
+
+    got_ids = [v.get("vulnerability_id") for v in per_vuln if isinstance(v, dict)]
+    if set(got_ids) != expected_ids:
+        missing = sorted(expected_ids - set(got_ids))
+        extra = sorted(set(got_ids) - expected_ids)
+        if missing:
+            suffix = f" (+{len(missing) - 5} more)" if len(missing) > 5 else ""
+            result.errors.append(f"missing patch vulnerability IDs: {', '.join(missing[:5])}{suffix}")
+        if extra:
+            suffix = f" (+{len(extra) - 5} more)" if len(extra) > 5 else ""
+            result.errors.append(f"unexpected vulnerability IDs: {', '.join(extra[:5])}{suffix}")
     return result

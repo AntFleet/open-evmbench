@@ -3,7 +3,7 @@ import copy
 import pytest
 
 from conftest import load_fixture
-from openevmbench.validation import validate_lifecycle, validate_phase1_detect, validate_submitted
+from openevmbench.validation import validate_lifecycle, validate_phase1_detect, validate_phase2_patch, validate_submitted
 
 POSITIVE_SUBMITTED = ["submitted_valid"]
 POSITIVE_LIFECYCLE = ["checking_valid", "accepted_valid", "rejected_valid", "promoted_valid", "yanked_valid"]
@@ -87,6 +87,26 @@ def test_patch_mode_allows_null_judge():
     record["judge"] = None
     result = validate_submitted(record)
     assert result.ok, result.errors
+
+
+def test_phase2_patch_requires_full_task_set():
+    record = load_fixture("submitted_valid")
+    record["phase"] = 2
+    record["mode"] = "patch"
+    record["judge"] = None
+    record["benchmark"]["harness_version"] = "patch-v1.0.0+frontier-evals.51052ce"
+    record["score"]["max_score"] = 44
+    result = validate_phase2_patch(record)
+    assert any("44" in e for e in result.errors)
+
+
+def test_phase2_patch_rejects_judge():
+    record = load_fixture("submitted_valid")
+    record["phase"] = 2
+    record["mode"] = "patch"
+    record["benchmark"]["harness_version"] = "patch-v1.0.0+frontier-evals.51052ce"
+    result = validate_phase2_patch(record)
+    assert any("omit judge" in e for e in result.errors)
 
 
 def test_passed_true_score_zero_rejected():

@@ -71,6 +71,7 @@ class BoardConfig:
     rank_window_days: int = 7
     prize_excluded_operators: tuple[str, ...] = ()
     reference_targets: tuple[dict[str, Any], ...] = ()
+    patch_reference_targets: tuple[dict[str, Any], ...] = ()
     open_weights_patterns: tuple[str, ...] = ()
     # SPEC §3 amendment 2026-06-20: optional stricter group that requires
     # all rows on the default leaderboard to share an agent.prompt_hash
@@ -93,6 +94,7 @@ class BoardConfig:
                 o.lower() for o in data.get("prize_excluded_operators", [])
             ),
             reference_targets=tuple(data.get("reference_targets", [])),
+            patch_reference_targets=tuple(data.get("patch_reference_targets", [])),
             open_weights_patterns=tuple(
                 p.lower() for p in data.get("open_weights_patterns", [])
             ),
@@ -166,6 +168,10 @@ class Attempt:
     @property
     def harness_version(self) -> str:
         return self.record["benchmark"]["harness_version"]
+
+    @property
+    def phase(self) -> int:
+        return int(self.record.get("phase", 1))
 
     @property
     def created_at(self) -> str:
@@ -400,11 +406,18 @@ def load_attempts(
     return attempts
 
 
-def _rankable(attempts: list[Attempt], config: BoardConfig, comparable_only: bool,
-              at: datetime.datetime | None) -> list[Attempt]:
+def _rankable(
+    attempts: list[Attempt],
+    config: BoardConfig,
+    comparable_only: bool,
+    at: datetime.datetime | None,
+    phase: int | None = None,
+) -> list[Attempt]:
     out = []
     for a in attempts:
         if a.state != "promoted" or a.promoted_at is None:
+            continue
+        if phase is not None and a.phase != phase:
             continue
         if at is not None and a.promoted_at > at:
             continue
@@ -430,6 +443,7 @@ def ranked_rows(
     config: BoardConfig,
     comparable_only: bool = True,
     at: datetime.datetime | None = None,
+    phase: int | None = None,
 ) -> list[RankedRow]:
     """One row per accepted submission, ordered by SPEC tie-breakers.
 
@@ -437,7 +451,7 @@ def ranked_rows(
     by operator. An operator with multiple promoted submissions appears
     multiple times, each at the rank earned by that submission.
     """
-    pool = _rankable(attempts, config, comparable_only, at)
+    pool = _rankable(attempts, config, comparable_only, at, phase=phase)
     ordered = sorted(pool, key=_rank_key)
     return [RankedRow(rank=i + 1, attempt=a) for i, a in enumerate(ordered)]
 
@@ -448,6 +462,7 @@ def with_rank_movement(
     config: BoardConfig,
     now: datetime.datetime,
     comparable_only: bool = True,
+    phase: int | None = None,
 ) -> list[RankedRow]:
     """Annotate rows with rank delta vs `rank_window_days` ago.
 
@@ -459,7 +474,9 @@ def with_rank_movement(
     then = now - datetime.timedelta(days=config.rank_window_days)
     old = {
         r.attempt.submission_id: r.rank
-        for r in ranked_rows(attempts, config, comparable_only=comparable_only, at=then)
+        for r in ranked_rows(
+            attempts, config, comparable_only=comparable_only, at=then, phase=phase
+        )
     }
     for row in rows:
         prev = old.get(row.attempt.submission_id)
@@ -502,10 +519,14 @@ class Moment:
     title: str
 
 
-def threshold_moments(attempts: list[Attempt], config: BoardConfig) -> list[Moment]:
+def threshold_moments(
+    attempts: list[Attempt],
+    config: BoardConfig,
+    phase: int = constants.PHASE_DETECT,
+) -> list[Moment]:
     """Milestones from the promotion timeline (SPEC §5: threshold moments)."""
     timeline = sorted(
-        _rankable(attempts, config, comparable_only=False, at=None),
+        _rankable(attempts, config, comparable_only=False, at=None, phase=phase),
         key=lambda a: (a.promoted_at, a.submission_id),
     )
     moments: list[Moment] = []
@@ -515,6 +536,22 @@ def threshold_moments(attempts: list[Attempt], config: BoardConfig) -> list[Mome
         if key not in seen:
             seen.add(key)
             moments.append(Moment(attempt.promoted_at, attempt.operator, attempt.submission_id, title))
+
+    if phase == constants.PHASE_PATCH:
+        sota_pct = next(
+            (t["score_pct"] for t in config.patch_reference_targets if t.get("primary")), None
+        )
+        prefix = "patch-"
+        for a in timeline:
+            add(f"{prefix}first-submission", a, "First promoted Patch submission")
+            pct = (a.official_score or 0) * 100
+            if sota_pct is not None and pct > sota_pct:
+                add(
+                    f"{prefix}crossed-sota",
+                    a,
+                    f"First to clear the published Patch SOTA ({sota_pct}%)",
+                )
+        return moments
 
     sota_pct = next(
         (t["score_pct"] for t in config.reference_targets if t.get("primary")), None

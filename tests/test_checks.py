@@ -31,7 +31,13 @@ class TestFindSubmissionDir:
         _, report = find_submission_dir([bad])
         assert any(f.code == checks.PATH_VIOLATION for f in report.failures)
 
-    def test_empty_pr_rejected(self):
+    def test_phase2_path_accepted(self):
+        sid = "018f7f64-2c2e-7b70-8f4d-000000000001"
+        good = f"submissions/phase2/alice/{sid}/record.json"
+        rel, report = find_submission_dir([good])
+        assert report.ok
+        assert rel == f"submissions/phase2/alice/{sid}/"
+
         _, report = find_submission_dir([])
         assert not report.ok
 
