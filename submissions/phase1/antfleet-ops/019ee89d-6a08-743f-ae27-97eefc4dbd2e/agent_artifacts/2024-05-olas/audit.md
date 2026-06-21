@@ -1,0 +1,17 @@
+# Audit: 2024-05-olas
+
+## VotingEscrow.getPastVotes returns voting power for blocks before the account had any lock
+- Location: governance/audits/internal/analysis/contracts/VotingEscrow-flatten.sol : `getPastVotes`
+- Mechanism: `getPastVotes()` calls `_findPointByBlock(blockNumber, account)` and then unconditionally decays the bias to the block time with `uPoint.bias -= uPoint.slope * int128(int64(uint64(blockTime)) - int64(uPoint.ts))`. Unlike its sibling `balanceOfAt()`, it omits the guard `if (uPoint.blockNumber < (blockNumber + 1))`. When an account locked *after* `blockNumber`, `_findPointByBlock` still returns the account's earliest checkpoint (index 0), whose `ts` is greater than `blockTime`; the subtraction therefore becomes an addition (`blockTime - uPoint.ts < 0`), inflating the bias above its value at lock creation and yielding a positive weight for a block at which the account in fact held nothing. The Governor reads exactly this function for vote weight (`_castVote → _getVotes → token.getPastVotes(account, proposal.voteStart)`) and for the proposer threshold (`propose → getPastVotes(account, block.number - 1)`).
+- Impact: An attacker can lock OLA *after* a proposal's snapshot block and still cast votes (or clear the proposal threshold) with non-zero, inflated weight, defeating snapshot-based governance and letting freshly locked tokens swing or pass any proposal.
+
+## buOLA.revoke corrupts `amountReleased`, permanently bricking withdraw after a partial withdrawal
+- Location: governance/audits/internal/analysis/contracts/buOLA-flatten.sol : `revoke` / `withdraw`
+- Mechanism: `revoke()` sets `lockedBalance.amountReleased = uint96(_releasableAmount(lockedBalance))` and `end = 0`. But `_releasableAmount` already nets out previously released tokens (`amount = amountLocked*releasedSteps/numSteps - amountReleased`), so overwriting the cumulative `amountReleased` with that delta destroys the record of tokens the account already withdrew. In `withdraw()`'s `end == 0` branch the contract then computes `amountBurn = amountLocked - amountReleased` and calls `IOLA(token).burn(amountBurn)`. After any prior partial withdrawal the contract no longer holds `amountLocked` OLA, so `amountBurn` exceeds its balance and OLA's checked `_burn` reverts; if the post-revoke releasable is `0`, `withdraw` instead reverts on the `amount == 0` check. Either path makes `withdraw()` revert forever.
+- Impact: Any account that withdrew part of its vested buOLA before being revoked can never withdraw again — its still-owed vested tokens and the non-vested remainder are permanently locked in the contract and never burned, leaving `supply` overstated.
+
+## OLA.mint silently succeeds without minting when the inflation cap is exceeded
+- Location: governance/audits/internal/analysis/contracts/OLA-flatten.sol : `mint` / `inflationControl`
+- Mechanism: `mint()` is gated as `if (inflationControl(amount)) { _mint(account, amount); }` with no `else`, so when `amount` exceeds `inflationRemainder()` the call returns successfully without minting and without reverting. The shared error interface even defines `MintRejectedByInflationPolicy`, showing a revert was the intended behavior.
+- Impact: A minter contract (treasury/tokenomics) that assumes a successful `mint()` actually created the tokens will credit rewards/accounting against tokens that were never minted, leading to failed claims or insolvency in downstream contracts.
+
