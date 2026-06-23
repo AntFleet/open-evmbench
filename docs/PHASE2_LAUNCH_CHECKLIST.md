@@ -84,10 +84,10 @@ Requires per-audit Docker images + **pinned Foundry nightly** (see spike notes).
 | `[~]` | **Spike:** grade gold patch for `2023-07-pooltogether` (2 vulns) | `scripts/spike_patch_worker.py` — **SPIKE PASS** per-vuln (`2/2` with `--skip-invariant`) |
 | `[x]` | `PatchDataset` loader (`patch-tasks` split, 44 IDs) | [dataset.py](../openevmbench/dataset.py) + tests |
 | `[~]` | `openevmbench/patch_worker.py` — apply diff, invariant suite, per-vuln tests, tamper checks | local spike done; tamper checks + Docker pending |
-| `[ ]` | Docker worker (clean env) matching upstream `PatchGrader` semantics | [scripts/docker_spike_patch_worker.py](../scripts/docker_spike_patch_worker.py) |
-| `[~]` | `validate_phase2_patch()` | [validation.py](../openevmbench/validation.py) + tests |
-| `[~]` | `openevmbench run --mode patch` packages record + artifacts | host-forge grading via `--sources`; Docker acceptance pending |
-| `[~]` | `check_package()` patch path (+ optional CI re-grade) | phase2 path + schema checks; CI re-grade pending Docker |
+| `[x]` | Docker worker (clean env) matching upstream `PatchGrader` semantics | [patch_docker.py](../openevmbench/patch_docker.py) |
+| `[x]` | `validate_phase2_patch()` | [validation.py](../openevmbench/validation.py) + tests |
+| `[x]` | `openevmbench run --mode patch --docker` packages record + artifacts | Docker grading path |
+| `[x]` | `check_package()` patch path + CI Docker re-grade | `OPENEVMBENCH_SKIP_PATCH_REGRADE` escape hatch |
 | `[ ]` | Unit tests: gold pass, bad diff fail, test-tamper fail | |
 
 ### Spike findings (`2023-07-pooltogether`, 2026-06-21)
@@ -133,7 +133,7 @@ Requires per-audit Docker images + **pinned Foundry nightly** (see spike notes).
 ## Launch blockers (all must be `[x]` for full pipeline parity)
 
 1. `[x]` Phase 1 stability sign-off (external smoke pass 2026-06-21)
-2. `[ ]` Patch worker grades submitted diffs in clean Docker env (CI re-grade)
+2. `[x]` Patch worker grades submitted diffs in clean Docker env (CI re-grade)
 3. `[x]` Phase 2 PR pipeline operational (`submissions/phase2/` path + checks)
 4. `[x]` Patch board renders with GPT-5.3-Codex 41.5% reference target
 5. `[x]` Submitter documentation complete

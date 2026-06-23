@@ -195,8 +195,14 @@ def _cmd_run_patch(args: argparse.Namespace, creds: Credentials) -> int:
 
     dataset = load_patch_dataset(args.upstream)
     sources_dir = Path(args.sources) if args.sources else None
-    if sources_dir is not None and not sources_dir.is_dir():
+    if args.docker:
+        if sources_dir is not None:
+            print("note: --docker ignores --sources (grading runs inside audit containers)")
+        sources_dir = None
+    elif sources_dir is not None and not sources_dir.is_dir():
         return _die(f"sources dir not found: {sources_dir}")
+    elif not args.docker and sources_dir is None:
+        print("warning: no --sources and no --docker; diffs will be copied but not graded", file=sys.stderr)
 
     tokens_per_task = (
         [int(t) for t in args.tokens_per_task.split(",")] if args.tokens_per_task else []
@@ -229,15 +235,18 @@ def _cmd_run_patch(args: argparse.Namespace, creds: Credentials) -> int:
         ),
         submissions_root=args.out,
         skip_invariant=not args.with_invariant,
+        use_docker=args.docker,
     )
     record = result.package.record
     pct = record["score"]["claimed_score"] * 100
     print(f"claimed score: {pct:.1f}%  {result.solved_count}/{record['score']['max_score']}")
     print(f"package: {result.package.package_dir}")
-    if sources_dir is None:
-        print("note: no --sources provided; diffs copied but not graded (reason_code=not-graded)")
-    elif args.skip_invariant:
-        print("note: graded with --skip-invariant (host forge); Docker worker required for acceptance parity")
+    if args.docker:
+        print("note: graded in Docker audit containers (acceptance-parity path)")
+    elif sources_dir is None:
+        print("note: no grading performed (reason_code=not-graded)")
+    elif not args.with_invariant:
+        print("note: host forge with invariant skipped; use --docker for acceptance parity")
     for warning in result.validation.warnings:
         print(f"warning: {warning}")
     print("next: openevmbench submit --package", result.package.package_dir)
@@ -449,7 +458,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--with-invariant",
         action="store_true",
-        help="patch mode: run invariant suite (requires forge pin parity; default skips)",
+        help="patch host mode: run invariant suite (requires forge pin parity; default skips)",
+    )
+    p.add_argument(
+        "--docker",
+        action="store_true",
+        help="patch mode: grade inside per-audit Docker containers (production / acceptance path)",
     )
     p.add_argument("--upstream", default="upstream/frontier-evals")
     p.add_argument("--harness-dir", default="harness")
