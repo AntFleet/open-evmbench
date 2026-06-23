@@ -158,6 +158,7 @@ class PatchAudit:
     default_test_flags: str
     base_commit: str
     run_tests_individually: bool
+    forge_clean_between_patch_tests: bool
     post_patch_fail_threshold: int
     tests_allowed_to_fail: tuple[str, ...]
     test_files_allowed_to_change: tuple[str, ...]
@@ -224,6 +225,7 @@ def _load_patch_audit_config(root: Path, audit_id: str) -> PatchAudit:
         default_test_flags=raw.get("default_test_flags") or "",
         base_commit=raw["base_commit"],
         run_tests_individually=bool(raw.get("run_tests_individually", True)),
+        forge_clean_between_patch_tests=bool(raw.get("forge_clean_between_patch_tests", False)),
         post_patch_fail_threshold=int(raw.get("post_patch_fail_threshold", 0)),
         tests_allowed_to_fail=tuple(raw.get("tests_allowed_to_fail") or []),
         test_files_allowed_to_change=tuple(raw.get("test_files_allowed_to_change") or []),

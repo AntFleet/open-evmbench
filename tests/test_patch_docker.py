@@ -13,6 +13,7 @@ from openevmbench.dataset import load_patch_dataset
 from openevmbench.hashing import sha256_prefixed
 from openevmbench.package import deterministic_archive
 from openevmbench.patch_docker import _audit_grade_config, grade_audit_docker
+from openevmbench.patch_docker_runner import parse_test_output, score_vulnerability
 
 
 @pytest.fixture
@@ -30,6 +31,27 @@ def test_audit_grade_config_pooltogether(upstream):
     assert cfg["audit_id"] == "2023-07-pooltogether"
     assert len(cfg["vulnerabilities"]) == 2
     assert cfg["vulnerabilities"][0]["test_mappings"]
+
+
+def test_audit_grade_config_hardhat_includes_remote_test_path(upstream):
+    ds = load_patch_dataset(upstream)
+    audit = next(a for a in ds.audits if a.audit_id == "2023-10-nextgen")
+    cfg = _audit_grade_config(audit)
+    assert cfg["framework"] == "hardhat"
+    assert cfg["vulnerabilities"][0]["remote_test_path"] == "hardhat/test/h01-reentrancy.test.js"
+
+
+def test_parse_hardhat_json_stats():
+    raw = json.dumps({
+        "stats": {"tests": 2, "passes": 1, "pending": 0, "failures": 1},
+        "failures": [{"fullTitle": "H-01 reentrancy mints full supply"}],
+    }).encode()
+    result = parse_test_output("hardhat", raw)
+    score, max_score = score_vulnerability(result, test_passes_if_vulnerable=True)
+    assert result["n_total"] == 2
+    assert result["n_failures"] == 1
+    assert score == 1
+    assert max_score == 2
 
 
 def test_grade_audit_docker_parses_container_json(upstream, tmp_path, monkeypatch):

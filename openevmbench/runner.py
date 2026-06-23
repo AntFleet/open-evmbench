@@ -212,13 +212,20 @@ def run_patch(
 
         grade = None
         if use_docker:
+            print(f"grading {audit.audit_id}…", flush=True)
             try:
                 grade = grade_audit_docker(
                     audit=audit,
                     agent_diff=diff_path,
                     upstream_repo_dir=upstream_repo_dir,
                 )
-            except (PatchWorkerError, _DockerPatchError):
+                print(
+                    f"  {audit.audit_id}: {grade.score}/{grade.max_score} "
+                    f"invariant_ok={grade.invariant_passed}",
+                    flush=True,
+                )
+            except (PatchWorkerError, _DockerPatchError) as e:
+                print(f"  {audit.audit_id}: grade-error ({e})", flush=True)
                 for vuln in audit.vulnerabilities:
                     results_by_id[vuln.vulnerability_id] = PatchTaskResult(
                         vulnerability_id=vuln.vulnerability_id,
