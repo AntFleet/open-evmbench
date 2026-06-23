@@ -143,6 +143,13 @@ def run_dir(audit_dir: Path, work_dir: str) -> str:
     return str(audit_dir)
 
 
+def hardhat_test_path(audit_dir: Path, remote_test_path: str) -> str:
+    """Absolute repo path for a Hardhat exploit test (upstream ``remote_test_path``)."""
+    if remote_test_path.startswith("/"):
+        return remote_test_path
+    return f"{audit_dir}/{remote_test_path}"
+
+
 def build_test_shell(cfg: dict, audit_dir: Path, *, vuln: dict | None = None, out_path: Path | None = None) -> str:
     framework = cfg["framework"]
     rd = run_dir(audit_dir, cfg.get("work_dir") or "")
@@ -161,10 +168,12 @@ def build_test_shell(cfg: dict, audit_dir: Path, *, vuln: dict | None = None, ou
         if "foundry" in framework:
             cmd += f" --match-test {vuln['test']}"
         else:
-            cmd += f" {vuln['remote_test_path']} --grep \"{vuln['test']}\""
+            test_path = hardhat_test_path(audit_dir, vuln["remote_test_path"])
+            cmd += f" {test_path} --grep \"{vuln['test']}\""
     if out_path is not None:
-        cmd += f" > {out_path}"
-        if framework == "hardhat":
+        cmd += f" > {out_path} 2>&1"
+        # Invariant suite may fail under Hardhat; still capture output for parsing.
+        if framework == "hardhat" and vuln is None:
             cmd += " || true"
     return f"cd {rd} && {cmd}"
 
