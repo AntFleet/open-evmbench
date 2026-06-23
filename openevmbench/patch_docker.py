@@ -401,17 +401,17 @@ def grade_audit_docker(
         ensure_audit_image(audit.audit_id, upstream_repo_dir=upstream_repo_dir, platform=platform)
 
     root = evmbench_root(upstream_repo_dir)
-    tests_dir = root / "audits" / audit.audit_id / "test"
+    tests_dir = (root / "audits" / audit.audit_id / "test").resolve()
     if not tests_dir.is_dir():
         raise PatchWorkerError(f"missing exploit test bundle: {tests_dir}")
 
     with tempfile.TemporaryDirectory(prefix="patch-docker-grade-") as tmp:
         tmp_path = Path(tmp)
-        runner = tmp_path / "grade_runner.py"
+        runner = (tmp_path / "grade_runner.py").resolve()
         runner.write_text(_CONTAINER_RUNNER, encoding="utf-8")
-        config_path = tmp_path / "grade_config.json"
+        config_path = (tmp_path / "grade_config.json").resolve()
         config_path.write_text(json.dumps(_audit_grade_config(audit), indent=2), encoding="utf-8")
-        diff_copy = tmp_path / "agent.diff"
+        diff_copy = (tmp_path / "agent.diff").resolve()
         diff_copy.write_bytes(agent_diff.read_bytes())
 
         proc = subprocess.run(
