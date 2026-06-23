@@ -39,6 +39,7 @@ from openevmbench.package import (
     new_submission_id,
     write_record,
 )
+from openevmbench.patch_docker import PatchWorkerError as _DockerPatchError, grade_audit_docker
 from openevmbench.patch_worker import PatchWorkerError, grade_audit_local
 from openevmbench.validation import ValidationResult, validate_phase1_detect, validate_phase2_patch
 
@@ -180,14 +181,17 @@ def run_patch(
     submissions_root: Path | str,
     submission_id: str | None = None,
     skip_invariant: bool = True,
+    use_docker: bool = False,
 ) -> PatchRunResult:
-    """Grade patch diffs locally and package a Phase 2 submission.
+    """Grade patch diffs and package a Phase 2 submission.
 
     Expects ``<agent_outputs_dir>/<audit-id>.diff`` for each audit in the
-    patch-tasks split. When ``sources_dir`` is set, grades present diffs
-    against ``<sources_dir>/<audit-id>/`` checkouts (host forge — use
-    ``skip_invariant=True`` until Docker worker lands).
+    patch-tasks split. With ``use_docker=True``, grades inside per-audit
+    containers (production path). Otherwise uses host forge against
+    ``sources_dir`` when provided.
     """
+    if use_docker and grade_audit_docker is None:  # pragma: no cover
+        raise RunError("Docker patch grading is unavailable in this installation")
     agent_outputs_dir = Path(agent_outputs_dir)
     submission_id = submission_id or new_submission_id()
     started = time.monotonic()
@@ -206,7 +210,24 @@ def run_patch(
                 )
             continue
 
-        if sources_dir is None:
+        grade = None
+        if use_docker:
+            try:
+                grade = grade_audit_docker(
+                    audit=audit,
+                    agent_diff=diff_path,
+                    upstream_repo_dir=upstream_repo_dir,
+                )
+            except (PatchWorkerError, _DockerPatchError):
+                for vuln in audit.vulnerabilities:
+                    results_by_id[vuln.vulnerability_id] = PatchTaskResult(
+                        vulnerability_id=vuln.vulnerability_id,
+                        passed=False,
+                        score=0,
+                        reason_code="grade-error",
+                    )
+                continue
+        elif sources_dir is None:
             for vuln in audit.vulnerabilities:
                 results_by_id[vuln.vulnerability_id] = PatchTaskResult(
                     vulnerability_id=vuln.vulnerability_id,
@@ -215,33 +236,46 @@ def run_patch(
                     reason_code="not-graded",
                 )
             continue
+        else:
+            repo_root = Path(sources_dir) / audit.audit_id
+            if not (repo_root / ".git").is_dir():
+                for vuln in audit.vulnerabilities:
+                    results_by_id[vuln.vulnerability_id] = PatchTaskResult(
+                        vulnerability_id=vuln.vulnerability_id,
+                        passed=False,
+                        score=0,
+                        reason_code="missing-sources",
+                    )
+                continue
 
-        repo_root = Path(sources_dir) / audit.audit_id
-        if not (repo_root / ".git").is_dir():
-            for vuln in audit.vulnerabilities:
-                results_by_id[vuln.vulnerability_id] = PatchTaskResult(
-                    vulnerability_id=vuln.vulnerability_id,
-                    passed=False,
-                    score=0,
-                    reason_code="missing-sources",
+            try:
+                grade = grade_audit_local(
+                    audit=audit,
+                    repo_root=repo_root,
+                    agent_diff=diff_path,
+                    upstream_repo_dir=upstream_repo_dir,
+                    skip_invariant=skip_invariant,
                 )
-            continue
+            except PatchWorkerError:
+                for vuln in audit.vulnerabilities:
+                    results_by_id[vuln.vulnerability_id] = PatchTaskResult(
+                        vulnerability_id=vuln.vulnerability_id,
+                        passed=False,
+                        score=0,
+                        reason_code="grade-error",
+                    )
+                continue
 
-        try:
-            grade = grade_audit_local(
-                audit=audit,
-                repo_root=repo_root,
-                agent_diff=diff_path,
-                upstream_repo_dir=upstream_repo_dir,
-                skip_invariant=skip_invariant,
-            )
-        except PatchWorkerError as e:
+        if grade is None:
+            continue
+        if not grade.vulnerabilities:
+            reason = grade.reason_code or "grade-error"
             for vuln in audit.vulnerabilities:
                 results_by_id[vuln.vulnerability_id] = PatchTaskResult(
                     vulnerability_id=vuln.vulnerability_id,
                     passed=False,
                     score=0,
-                    reason_code="grade-error",
+                    reason_code=reason,
                 )
             continue
 

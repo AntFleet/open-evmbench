@@ -12,6 +12,7 @@ machine-readable rejection reason, the message is the human-readable detail.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -34,6 +35,8 @@ ARCHIVE_MISMATCH = "archive-mismatch"
 VULNERABILITY_ID_MISMATCH = "vulnerability-id-mismatch"
 ARCHIVE_SYMLINK = "archive-symlink"
 FILE_TOO_LARGE = "file-too-large"
+SCORE_MISMATCH = "score-mismatch"
+GRADER_UNAVAILABLE = "grader-unavailable"
 
 MAX_TRANSCRIPT_BYTES = 50 * 1024 * 1024
 MAX_RECORD_BYTES = 1 * 1024 * 1024
@@ -206,6 +209,67 @@ def _check_archive_symlinks(artifacts_dir: Path, repo_root: Path, report: CheckR
             return
 
 
+def _check_patch_docker_regrade(
+    repo_root: Path,
+    package_dir: Path,
+    record: dict,
+    dataset: PatchDataset,
+    report: CheckReport,
+) -> None:
+    if os.environ.get("OPENEVMBENCH_SKIP_PATCH_REGRADE", "").lower() in ("1", "true", "yes"):
+        report.warnings.append("patch Docker re-grade skipped (OPENEVMBENCH_SKIP_PATCH_REGRADE)")
+        return
+
+    from openevmbench.patch_docker import docker_available, regrade_patch_package
+    from openevmbench.patch_worker import PatchWorkerError
+
+    if not docker_available():
+        report.fail(
+            GRADER_UNAVAILABLE,
+            "Phase 2 submissions require Docker re-grade but the Docker daemon is unavailable",
+        )
+        return
+
+    upstream = repo_root / "upstream" / "frontier-evals"
+    if not upstream.is_dir():
+        report.fail(GRADER_UNAVAILABLE, "missing upstream/frontier-evals for Docker re-grade")
+        return
+
+    try:
+        graded = regrade_patch_package(
+            package_dir=package_dir,
+            dataset=dataset,
+            upstream_repo_dir=upstream,
+        )
+    except PatchWorkerError as e:
+        report.fail(SCORE_MISMATCH, f"Docker re-grade failed: {e}")
+        return
+
+    claimed_by_id = {
+        entry["vulnerability_id"]: entry for entry in record["score"]["per_vulnerability"]
+    }
+    for vid, entry in claimed_by_id.items():
+        vg = graded.get(vid)
+        if vg is None:
+            report.fail(SCORE_MISMATCH, f"Docker re-grade missing result for {vid}")
+            continue
+        expected_passed = bool(entry["passed"])
+        expected_score = int(entry.get("score", 0))
+        if vg.passed != expected_passed or vg.score != expected_score:
+            report.fail(
+                SCORE_MISMATCH,
+                f"{vid}: record claims passed={expected_passed} score={expected_score}, "
+                f"Docker got passed={vg.passed} score={vg.score} ({vg.reason_code})",
+            )
+
+    docker_solved = sum(1 for v in graded.values() if v.passed)
+    if int(record["score"]["solved_count"]) != docker_solved:
+        report.fail(
+            SCORE_MISMATCH,
+            f"solved_count {record['score']['solved_count']} != Docker re-grade {docker_solved}",
+        )
+
+
 def check_package(
     repo_root: Path | str,
     package_rel: str,
@@ -347,5 +411,8 @@ def check_package(
             ARCHIVE_MISMATCH,
             f"submission.archive_size_bytes {record['submission']['archive_size_bytes']} != rebuilt {len(rebuilt)}",
         )
+
+    if path_phase == 2 and isinstance(dataset, PatchDataset):
+        _check_patch_docker_regrade(repo_root, package_dir, record, dataset, report)
 
     return report

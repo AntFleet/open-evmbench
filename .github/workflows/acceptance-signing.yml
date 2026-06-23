@@ -72,7 +72,7 @@ jobs:
                 exit 1
                 ;;
             esac
-            if [[ ! "$path" =~ ^submissions/phase1/[A-Za-z0-9][A-Za-z0-9-]{0,38}/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/.+$ ]]; then
+            if [[ ! "$path" =~ ^submissions/phase[123]/[A-Za-z0-9][A-Za-z0-9-]{0,38}/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/.+$ ]]; then
               echo "pr-touches-non-submission-files: submission PRs may only modify their own submission directory ($path)" >&2
               exit 1
             fi

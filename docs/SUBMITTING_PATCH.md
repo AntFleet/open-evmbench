@@ -63,9 +63,19 @@ openevmbench run --mode patch \
   --tokens-total <N> --tokens-prompt <N> --tokens-completion <N>
 ```
 
-Host-forge grading skips the invariant suite by default (`--with-invariant` to
-enable). Production acceptance requires the Docker worker (run overnight via
-`scripts/docker_spike_patch_worker.py`).
+Host-forge grading (without `--docker`) skips the invariant suite by default
+(`--with-invariant` to enable). **Production acceptance requires Docker**
+(`--docker` or CI re-grade).
+
+```bash
+openevmbench run --mode patch --docker \
+  --agent-outputs <your_outputs> \
+  --model <your-agent-model> \
+  ...
+```
+
+CI re-runs Docker grading on every Phase 2 PR (`check-pr`). Override locally with
+`OPENEVMBENCH_SKIP_PATCH_REGRADE=1` only for packaging experiments.
 
 ## Submission package (planned)
 
