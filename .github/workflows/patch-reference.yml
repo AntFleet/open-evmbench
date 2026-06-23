@@ -1,0 +1,66 @@
+# Build or smoke-test the AntFleet Patch reference package on native amd64.
+# Does not open a PR — download the artifact and open a submission PR locally,
+# or copy the package path from a self-hosted runner log.
+name: patch-reference
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "smoke = pooltogether + nextgen; full = 22 audits + package"
+        required: true
+        type: choice
+        options:
+          - smoke
+          - full
+        default: smoke
+
+permissions:
+  contents: read
+
+jobs:
+  reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Build evmbench/patch-base
+        run: |
+          docker build -f docker/evmbench-patch-base.Dockerfile \
+            -t evmbench/patch-base:latest docker/
+
+      - name: Fetch pinned upstream dataset
+        run: python -c "from openevmbench.upstream import ensure_upstream; ensure_upstream()"
+
+      - name: Run patch reference (${{ inputs.mode }})
+        run: |
+          python scripts/patch_reference_package.py "${{ inputs.mode }}" \
+            --diffs-dir runs/patch_reference/gold_diffs \
+            --out submissions
+
+      - name: Upload reference package
+        if: inputs.mode == 'full'
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase2-antfleet-reference-package
+          path: submissions/phase2/antfleet-ops/
+          retention-days: 14
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "mode=${{ inputs.mode }}"
+          echo "On full success, download artifact phase2-antfleet-reference-package"
+          echo "then: git checkout -b submission/antfleet-ops-<id-prefix>"
+          echo "      git add submissions/phase2/antfleet-ops/<id>/"
+          echo "      gh pr create ..."

@@ -77,6 +77,10 @@ openevmbench run --mode patch --docker \
 CI re-runs Docker grading on every Phase 2 PR (`check-pr`). Override locally with
 `OPENEVMBENCH_SKIP_PATCH_REGRADE=1` only for packaging experiments.
 
+**CI reference run (maintainers):** Actions → `patch-reference` → smoke (2 audits)
+or full (22 audits + package artifact). See
+[.github/workflows/patch-reference.yml](../.github/workflows/patch-reference.yml).
+
 ## Submission package (planned)
 
 ```text

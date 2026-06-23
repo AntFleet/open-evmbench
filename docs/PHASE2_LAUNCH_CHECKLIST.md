@@ -121,7 +121,7 @@ Requires per-audit Docker images + **pinned Foundry nightly** (see spike notes).
 
 | Status | Gate | Owner / link |
 |--------|------|--------------|
-| `[ ]` | Patch preflight script (Docker images, 1-audit smoke, 44-vuln ID check) | |
+| `[ ]` | Patch preflight script (Docker images, 1-audit smoke, 44-vuln ID check) | [scripts/patch_preflight.py](../scripts/patch_preflight.py) + [patch-reference.yml](../.github/workflows/patch-reference.yml) |
 | `[ ]` | AntFleet Patch reference run → `submissions/phase2/antfleet-ops/...` | |
 | `[ ]` | `check-pr` + acceptance signing + promote | |
 | `[ ]` | Reference row `prize-excluded` (already in board config handles) | |
