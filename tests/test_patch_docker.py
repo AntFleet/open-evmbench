@@ -13,7 +13,12 @@ from openevmbench.dataset import load_patch_dataset
 from openevmbench.hashing import sha256_prefixed
 from openevmbench.package import deterministic_archive
 from openevmbench.patch_docker import _audit_grade_config, grade_audit_docker
-from openevmbench.patch_docker_runner import parse_test_output, score_vulnerability
+from openevmbench.patch_docker_runner import (
+    build_test_shell,
+    hardhat_test_path,
+    parse_test_output,
+    score_vulnerability,
+)
 
 
 @pytest.fixture
@@ -39,6 +44,23 @@ def test_audit_grade_config_hardhat_includes_remote_test_path(upstream):
     cfg = _audit_grade_config(audit)
     assert cfg["framework"] == "hardhat"
     assert cfg["vulnerabilities"][0]["remote_test_path"] == "hardhat/test/h01-reentrancy.test.js"
+
+
+def test_build_test_shell_hardhat_uses_audit_absolute_test_path(upstream):
+    ds = load_patch_dataset(upstream)
+    audit = next(a for a in ds.audits if a.audit_id == "2023-10-nextgen")
+    cfg = _audit_grade_config(audit)
+    audit_dir = Path("/home/agent/audit")
+    vuln = cfg["vulnerabilities"][0]
+    cmd = build_test_shell(cfg, audit_dir, vuln=vuln, out_path=Path("/tmp/vuln.out"))
+    expected = hardhat_test_path(audit_dir, vuln["remote_test_path"])
+    assert expected in cmd
+    assert "hardhat/hardhat/test" not in cmd
+    assert "> /tmp/vuln.out 2>&1" in cmd
+    assert "|| true" not in cmd
+
+    inv_cmd = build_test_shell(cfg, audit_dir, out_path=Path("/tmp/invariant.out"))
+    assert "|| true" in inv_cmd
 
 
 def test_parse_hardhat_json_stats():
