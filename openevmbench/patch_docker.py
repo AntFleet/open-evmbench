@@ -8,6 +8,7 @@ with upstream-pinned Foundry, matching ``PatchGrader`` semantics from
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -19,8 +20,12 @@ from openevmbench.patch_worker import AuditGrade, PatchWorkerError, Vulnerabilit
 
 # Upstream images target amd64. Required on Apple Silicon hosts.
 DOCKER_PLATFORM = "linux/amd64"
-BASE_IMAGE = "evmbench/base:latest"
+UPSTREAM_BASE_IMAGE = "evmbench/base:latest"
+PATCH_BASE_IMAGE = "evmbench/patch-base:latest"
 PLOIT_BUILDER_IMAGE = "ploit-builder:latest"
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_PATCH_BASE_DOCKERFILE = _REPO_ROOT / "docker" / "evmbench-patch-base.Dockerfile"
 
 
 def evmbench_root(upstream_repo_dir: Path) -> Path:
@@ -58,19 +63,47 @@ def _run(cmd: list[str], *, cwd: Path | None = None, check: bool = True) -> subp
     return proc
 
 
+def _use_upstream_base() -> bool:
+    return os.environ.get("PATCH_USE_UPSTREAM_BASE", "").strip() == "1"
+
+
+def _patch_base_image() -> str:
+    return UPSTREAM_BASE_IMAGE if _use_upstream_base() else PATCH_BASE_IMAGE
+
+
+def _rewrite_audit_dockerfile(content: str, base_image: str) -> str:
+    for old in (UPSTREAM_BASE_IMAGE, "evmbench/base:latest", "evmbench/base"):
+        if old in content:
+            return content.replace(old, base_image, 1)
+    raise PatchWorkerError(
+        f"audit Dockerfile must FROM {UPSTREAM_BASE_IMAGE} (or evmbench/base); got:\n{content[:500]}"
+    )
+
+
 def build_base_images(*, upstream_repo_dir: Path, platform: str = DOCKER_PLATFORM) -> None:
-    root = evmbench_root(upstream_repo_dir)
-    ploit_dockerfile = root / "ploit" / "Dockerfile"
-    if not ploit_dockerfile.is_file():
-        raise PatchWorkerError(f"missing {ploit_dockerfile} — run openevmbench clone")
+    if _use_upstream_base():
+        root = evmbench_root(upstream_repo_dir)
+        ploit_dockerfile = root / "ploit" / "Dockerfile"
+        if not ploit_dockerfile.is_file():
+            raise PatchWorkerError(f"missing {ploit_dockerfile} — run openevmbench clone")
+        _run([
+            "docker", "build", f"--platform={platform}",
+            "-f", str(ploit_dockerfile),
+            "-t", PLOIT_BUILDER_IMAGE,
+            "--target", "ploit-builder",
+            str(root),
+        ])
+        _run(["docker", "build", f"--platform={platform}", "-t", UPSTREAM_BASE_IMAGE, str(root / "evmbench")])
+        return
+
+    if not _PATCH_BASE_DOCKERFILE.is_file():
+        raise PatchWorkerError(f"missing {_PATCH_BASE_DOCKERFILE}")
     _run([
         "docker", "build", f"--platform={platform}",
-        "-f", str(ploit_dockerfile),
-        "-t", PLOIT_BUILDER_IMAGE,
-        "--target", "ploit-builder",
-        str(root),
+        "-f", str(_PATCH_BASE_DOCKERFILE),
+        "-t", PATCH_BASE_IMAGE,
+        str(_PATCH_BASE_DOCKERFILE.parent),
     ])
-    _run(["docker", "build", f"--platform={platform}", "-t", BASE_IMAGE, str(root / "evmbench")])
 
 
 def audit_image_exists(audit_id: str) -> bool:
@@ -93,15 +126,34 @@ def build_audit_image(
     audit_dir = root / "audits" / audit_id
     if not (audit_dir / "Dockerfile").is_file():
         raise PatchWorkerError(f"missing audit Dockerfile: {audit_dir / 'Dockerfile'}")
+    base_image = _patch_base_image()
     if ensure_base:
-        base_ok = subprocess.run(["docker", "image", "inspect", BASE_IMAGE], capture_output=True).returncode == 0
+        base_ok = subprocess.run(["docker", "image", "inspect", base_image], capture_output=True).returncode == 0
         if not base_ok:
             build_base_images(upstream_repo_dir=upstream_repo_dir, platform=platform)
-    _run([
-        "docker", "build", f"--platform={platform}",
-        "-t", audit_image_tag(audit_id),
-        str(audit_dir),
-    ])
+    dockerfile = audit_dir / "Dockerfile"
+    content = dockerfile.read_text(encoding="utf-8")
+    if _use_upstream_base():
+        patched = content
+    else:
+        patched = _rewrite_audit_dockerfile(content, base_image)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".Dockerfile",
+        delete=False,
+        encoding="utf-8",
+    ) as tmp:
+        tmp.write(patched)
+        tmp_path = Path(tmp.name)
+    try:
+        _run([
+            "docker", "build", f"--platform={platform}",
+            "-f", str(tmp_path),
+            "-t", audit_image_tag(audit_id),
+            str(audit_dir),
+        ])
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def ensure_audit_image(

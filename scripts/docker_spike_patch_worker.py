@@ -2,7 +2,8 @@
 """Docker spike: grade gold patch inside evmbench/audit:2023-07-pooltogether.
 
 Uses the production ``openevmbench.patch_docker`` worker. First run builds
-ploit-builder → evmbench/base → audit image (slow on Apple Silicon amd64).
+``evmbench/patch-base`` (slim; no ploit) → audit image. Set
+``PATCH_USE_UPSTREAM_BASE=1`` to build full upstream ``evmbench/base`` instead.
 
 Usage:
     .venv/bin/python scripts/docker_spike_patch_worker.py --check-only
