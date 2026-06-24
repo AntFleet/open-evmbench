@@ -12,7 +12,13 @@ from openevmbench.checks import GRADER_UNAVAILABLE, check_package
 from openevmbench.dataset import load_patch_dataset
 from openevmbench.hashing import sha256_prefixed
 from openevmbench.package import deterministic_archive
-from openevmbench.patch_docker import _audit_grade_config, _rewrite_audit_dockerfile, grade_audit_docker
+from openevmbench.patch_docker import (
+    _audit_grade_config,
+    _rewrite_audit_dockerfile,
+    grade_audit_docker,
+    regrade_patch_package,
+)
+from openevmbench.patch_worker import AuditGrade, PatchWorkerError, VulnerabilityGrade
 from openevmbench.patch_docker_runner import (
     build_test_shell,
     hardhat_test_path,
@@ -222,6 +228,59 @@ def test_check_package_skips_docker_regrade_when_env_set(upstream, tmp_path, mon
     report = check_package(tmp_path, rel, pr_author="alice", pr_author_id=1, dataset=ds)
     assert report.ok
     assert any("skipped" in w.lower() for w in report.warnings)
+
+
+def test_regrade_patch_package_records_grade_error_per_audit(upstream, tmp_path, monkeypatch):
+    ds = load_patch_dataset(upstream)
+    sid = "019f0000-0000-7000-8000-000000000010"
+    package_dir = _patch_package(tmp_path, ds, sid)
+    artifacts = package_dir / "agent_artifacts"
+    for audit in ds.audits:
+        p = artifacts / f"{audit.audit_id}.diff"
+        if not p.is_file():
+            p.write_text("diff\n", encoding="utf-8")
+
+    def fake_grade(*, audit, **kwargs):
+        if audit.audit_id == "2023-07-pooltogether":
+            raise PatchWorkerError("docker grade failed")
+        return AuditGrade(
+            audit_id=audit.audit_id,
+            passed=True,
+            score=len(audit.vulnerabilities),
+            max_score=len(audit.vulnerabilities),
+            invariant_passed=True,
+            vulnerabilities=[
+                VulnerabilityGrade(
+                    vulnerability_id=v.vulnerability_id,
+                    passed=True,
+                    score=1,
+                    max_score=1,
+                    reason_code="patched",
+                )
+                for v in audit.vulnerabilities
+            ],
+        )
+
+    monkeypatch.setattr("openevmbench.patch_docker.grade_audit_docker", fake_grade)
+    upstream_root = tmp_path / "upstream" / "frontier-evals"
+    if not upstream_root.is_dir():
+        upstream_root.parent.mkdir(parents=True, exist_ok=True)
+        upstream_root.symlink_to(upstream.resolve())
+
+    results = regrade_patch_package(
+        package_dir=package_dir,
+        dataset=ds,
+        upstream_repo_dir=upstream_root,
+        build_if_missing=False,
+    )
+
+    pool = next(a for a in ds.audits if a.audit_id == "2023-07-pooltogether")
+    for vuln in pool.vulnerabilities:
+        entry = results[vuln.vulnerability_id]
+        assert entry.reason_code == "grade-error"
+        assert not entry.passed
+
+    assert sum(1 for v in results.values() if v.passed) == 44 - len(pool.vulnerabilities)
 
 
 def test_check_package_fails_without_docker(upstream, tmp_path, monkeypatch):
