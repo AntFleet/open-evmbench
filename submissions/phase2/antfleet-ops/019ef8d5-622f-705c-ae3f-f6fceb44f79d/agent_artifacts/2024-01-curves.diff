@@ -1,0 +1,48 @@
+diff --git a/contracts/Curves.sol b/contracts/Curves.sol
+index 817c79b..1296686 100644
+--- a/contracts/Curves.sol
++++ b/contracts/Curves.sol
+@@ -322,6 +322,11 @@ contract Curves is CurvesErrors, Security {
+         curvesTokenBalance[curvesTokenSubject][to] = curvesTokenBalance[curvesTokenSubject][to] + amount;
+ 
+         emit Transfer(curvesTokenSubject, from, to, amount);
++
++        if (feesEconomics.holdersFeePercent > 0 && address(feeRedistributor) != address(0)) {
++            feeRedistributor.onBalanceChange(curvesTokenSubject, from);
++            feeRedistributor.onBalanceChange(curvesTokenSubject, to);
++        }
+     }
+ 
+     // Internal function to add a curvesTokenSubject to the list if not already present
+diff --git a/contracts/FeeSplitter.sol b/contracts/FeeSplitter.sol
+index bb24f02..5cd1ed0 100644
+--- a/contracts/FeeSplitter.sol
++++ b/contracts/FeeSplitter.sol
+@@ -32,7 +32,7 @@ contract FeeSplitter is Security {
+ 
+     constructor() Security() {}
+ 
+-    function setCurves(Curves curves_) public {
++    function setCurves(Curves curves_) public onlyOwner {
+         curves = curves_;
+     }
+ 
+diff --git a/contracts/Security.sol b/contracts/Security.sol
+index b1dfee5..fe13361 100644
+--- a/contracts/Security.sol
++++ b/contracts/Security.sol
+@@ -6,12 +6,12 @@ contract Security {
+     mapping(address => bool) public managers;
+ 
+     modifier onlyOwner() {
+-        msg.sender == owner;
++        require(msg.sender == owner, "Caller is not the owner");
+         _;
+     }
+ 
+     modifier onlyManager() {
+-        managers[msg.sender] == true;
++        require(managers[msg.sender], "Caller is not a manager");
+         _;
+     }
+ 

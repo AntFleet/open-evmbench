@@ -1,0 +1,97 @@
+diff --git a/src/libraries/logic/IsolateLogic.sol b/src/libraries/logic/IsolateLogic.sol
+index be67080..426ee9b 100644
+--- a/src/libraries/logic/IsolateLogic.sol
++++ b/src/libraries/logic/IsolateLogic.sol
+@@ -420,6 +420,8 @@ library IsolateLogic {
+ 
+       ValidateLogic.validateIsolateLiquidateLoan(params, debtGroupData, loanData);
+ 
++      require(loanData.lastBidder == params.msgSender, Errors.INVALID_CALLER);
++
+       vars.auctionEndTimestamp = loanData.bidStartTimestamp + nftAssetData.auctionDuration;
+       require(block.timestamp > vars.auctionEndTimestamp, Errors.ISOLATE_BID_AUCTION_DURATION_NOT_END);
+ 
+diff --git a/src/libraries/logic/ValidateLogic.sol b/src/libraries/logic/ValidateLogic.sol
+index 4c287a9..53e8fe9 100644
+--- a/src/libraries/logic/ValidateLogic.sol
++++ b/src/libraries/logic/ValidateLogic.sol
+@@ -497,6 +497,12 @@ library ValidateLogic {
+ 
+     for (uint256 i = 0; i < inputParams.amounts.length; i++) {
+       require(inputParams.amounts[i] > 0, Errors.INVALID_AMOUNT);
++
++      DataTypes.ERC721TokenData storage tokenData = VaultLogic.erc721GetTokenData(
++        nftAssetData,
++        inputParams.nftTokenIds[i]
++      );
++      require(tokenData.owner == inputParams.onBehalf, Errors.ISOLATE_LOAN_OWNER_NOT_MATCH);
+     }
+   }
+ 
+diff --git a/src/libraries/logic/VaultLogic.sol b/src/libraries/logic/VaultLogic.sol
+index 5fc739c..d217c02 100644
+--- a/src/libraries/logic/VaultLogic.sol
++++ b/src/libraries/logic/VaultLogic.sol
+@@ -618,6 +618,7 @@ library VaultLogic {
+ 
+       tokenData.owner = address(0);
+       tokenData.supplyMode = 0;
++      tokenData.lockerAddr = address(0);
+     }
+ 
+     assetData.totalScaledIsolateSupply -= tokenIds.length;
+@@ -636,6 +637,7 @@ library VaultLogic {
+ 
+       tokenData.owner = address(0);
+       tokenData.supplyMode = 0;
++      tokenData.lockerAddr = address(0);
+     }
+ 
+     assetData.totalScaledIsolateSupply -= tokenIds.length;
+diff --git a/src/yield/YieldAccount.sol b/src/yield/YieldAccount.sol
+index edc1949..83ba120 100644
+--- a/src/yield/YieldAccount.sol
++++ b/src/yield/YieldAccount.sol
+@@ -75,4 +75,8 @@ contract YieldAccount is IYieldAccount, Initializable {
+   }
+ 
+   receive() external payable {}
++
++  function onERC721Received(address, address, uint256, bytes memory) public virtual returns (bytes4) {
++    return this.onERC721Received.selector;
++  }
+ }
+diff --git a/src/yield/etherfi/YieldEthStakingEtherfi.sol b/src/yield/etherfi/YieldEthStakingEtherfi.sol
+index dcd9d9b..5593d2f 100644
+--- a/src/yield/etherfi/YieldEthStakingEtherfi.sol
++++ b/src/yield/etherfi/YieldEthStakingEtherfi.sol
+@@ -75,9 +75,9 @@ contract YieldEthStakingEtherfi is YieldStakingBase {
+       abi.encodeWithSelector(ILiquidityPool.deposit.selector),
+       amount
+     );
+-    uint256 yieldAmount = abi.decode(result, (uint256));
+-    require(yieldAmount > 0, Errors.YIELD_ETH_DEPOSIT_FAILED);
+-    return yieldAmount;
++    uint256 yieldShare = abi.decode(result, (uint256));
++    require(yieldShare > 0, Errors.YIELD_ETH_DEPOSIT_FAILED);
++    return amount;
+   }
+ 
+   function protocolRequestWithdrawal(YieldStakeData storage sd) internal virtual override {
+diff --git a/src/yield/lido/YieldEthStakingLido.sol b/src/yield/lido/YieldEthStakingLido.sol
+index 00dd7d5..183b44f 100644
+--- a/src/yield/lido/YieldEthStakingLido.sol
++++ b/src/yield/lido/YieldEthStakingLido.sol
+@@ -73,9 +73,9 @@ contract YieldEthStakingLido is YieldStakingBase {
+       abi.encodeWithSelector(IStETH.submit.selector, address(0)),
+       amount
+     );
+-    uint256 yieldAmount = abi.decode(result, (uint256));
+-    require(yieldAmount > 0, Errors.YIELD_ETH_DEPOSIT_FAILED);
+-    return yieldAmount;
++    uint256 yieldShare = abi.decode(result, (uint256));
++    require(yieldShare > 0, Errors.YIELD_ETH_DEPOSIT_FAILED);
++    return amount;
+   }
+ 
+   function protocolRequestWithdrawal(YieldStakeData storage sd) internal virtual override {

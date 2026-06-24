@@ -1,0 +1,257 @@
+diff --git a/smart-contracts/src/libraries/Errors.sol b/smart-contracts/src/libraries/Errors.sol
+index 5625d18..f01b3db 100644
+--- a/smart-contracts/src/libraries/Errors.sol
++++ b/smart-contracts/src/libraries/Errors.sol
+@@ -49,6 +49,21 @@ library Errors {
+      */
+     error Shared_HookFailBytes(bytes revertData);
+ 
++    /**
++     * @dev Thrown when an ERC20 transfer failed.
++     *
++     * @param token Address of the token being transferred.
++     * @param from  Address that the token was sent from.
++     * @param to    Address that the token was sent to.
++     * @param value Amount of the token sent.
++     */
++    error Shared_ERC20TransferFailed(
++        address token,
++        address from,
++        address to,
++        uint256 value
++    );
++
+     /////////////////////////////////////////////////////////////////////////////////
+     //                                 Create Policy                               //
+     /////////////////////////////////////////////////////////////////////////////////
+diff --git a/smart-contracts/src/libraries/RentalConstants.sol b/smart-contracts/src/libraries/RentalConstants.sol
+index d05c90c..4299404 100644
+--- a/smart-contracts/src/libraries/RentalConstants.sol
++++ b/smart-contracts/src/libraries/RentalConstants.sol
+@@ -57,6 +57,9 @@ bytes4 constant gnosis_safe_enable_module_selector = 0x610b5925;
+ // bytes4(keccak256("disableModule(address,address)"));
+ bytes4 constant gnosis_safe_disable_module_selector = 0xe009cfde;
+ 
++// bytes4(keccak256("setFallbackHandler(address)"))
++bytes4 constant gnosis_safe_set_fallback_handler_selector = 0xf08a0323;
++
+ // Module offsets for gnosis safe
+ uint256 constant gnosis_safe_enable_module_offset = 0x24;
+ uint256 constant gnosis_safe_disable_module_offset = 0x24;
+diff --git a/smart-contracts/src/policies/Create.sol b/smart-contracts/src/policies/Create.sol
+index 061180d..8f77ed4 100644
+--- a/smart-contracts/src/policies/Create.sol
++++ b/smart-contracts/src/policies/Create.sol
+@@ -4,6 +4,9 @@ pragma solidity ^0.8.20;
+ import {ZoneParameters} from "@seaport-core/lib/rental/ConsiderationStructs.sol";
+ import {ReceivedItem, SpentItem} from "@seaport-types/lib/ConsiderationStructs.sol";
+ import {LibString} from "@solady/utils/LibString.sol";
++import {IERC20} from "@openzeppelin-contracts/interfaces/IERC20.sol";
++import {IERC721} from "@openzeppelin-contracts/token/ERC721/IERC721.sol";
++import {IERC1155} from "@openzeppelin-contracts/token/ERC1155/IERC1155.sol";
+ 
+ import {ISafe} from "@src/interfaces/ISafe.sol";
+ import {IHook} from "@src/interfaces/IHook.sol";
+@@ -538,10 +541,7 @@ contract Create is Policy, Signer, Zone, Accumulator {
+         _isValidSafeOwner(seaportPayload.fulfiller, payload.fulfillment.recipient);
+ 
+         // Check: verify each execution was sent to the expected destination.
+-        _executionInvariantChecks(
+-            seaportPayload.totalExecutions,
+-            payload.fulfillment.recipient
+-        );
++        _executionInvariantChecks(seaportPayload.totalExecutions);
+ 
+         // Check: validate and process seaport offer and consideration items based
+         // on the order type.
+@@ -594,11 +594,23 @@ contract Create is Policy, Signer, Zone, Accumulator {
+             // Interaction: Update storage only if the order is a Base Order or Pay order.
+             STORE.addRentals(orderHash, _convertToStatic(rentalAssetUpdates));
+ 
+-            // Interaction: Increase the deposit value on the payment escrow so
+-            // it knows how many tokens were sent to it.
++            // Interaction: Send tokens to their expected destinations. The rented assets
++            // will go to the rental wallet and the payments will go to the escrow.
+             for (uint256 i = 0; i < items.length; ++i) {
+-                if (items[i].isERC20()) {
+-                    ESCRW.increaseDeposit(items[i].token, items[i].amount);
++                Item memory item = items[i];
++
++                if (item.isERC20()) {
++                    // Send tokens to the payment escrow.
++                    _transferERC20(item.token, address(ESCRW), item.amount);
++
++                    // Increase deposit on the escrow.
++                    ESCRW.increaseDeposit(item.token, item.amount);
++                } else if (item.isERC721()) {
++                    // Send ERC721 to the rental wallet.
++                    _transferERC721(item, order.rentalWallet);
++                } else if (item.isERC1155()) {
++                    // Send ERC1155 to the rental wallet.
++                    _transferERC1155(item, order.rentalWallet);
+                 }
+             }
+ 
+@@ -681,38 +693,72 @@ contract Create is Policy, Signer, Zone, Accumulator {
+ 
+     /**
+      * @dev After a Seaport order has been executed, invariant checks are made to ensure
+-     *      that all assets are owned by the correct addresses. More specifically, all
+-     *      ERC20 tokens are sent to the payment escrow module, and all rental assets
+-     *      are in the intended recipient's rental safe.
++     *      that all assets were sent to the correct address. More specifically, all
++     *      tokens must first be sent to the Create Policy.
+      *
+      * @param executions Each execution that was performed by Seaport.
+-     * @param expectedRentalSafe The intended recipient of the rental assets.
+      */
+-    function _executionInvariantChecks(
+-        ReceivedItem[] memory executions,
+-        address expectedRentalSafe
+-    ) internal view {
++    function _executionInvariantChecks(ReceivedItem[] memory executions) internal view {
+         for (uint256 i = 0; i < executions.length; ++i) {
+             ReceivedItem memory execution = executions[i];
+ 
+-            // ERC20 invariant where the recipient must be the payment escrow.
+-            if (execution.isERC20()) {
+-                _checkExpectedRecipient(execution, address(ESCRW));
+-            }
+-            // ERC721 and ERC1155 invariants where the recipient must
+-            // be the expected rental safe.
+-            else if (execution.isRental()) {
+-                _checkExpectedRecipient(execution, expectedRentalSafe);
+-            }
+-            // Revert if unsupported item type.
+-            else {
+-                revert Errors.CreatePolicy_SeaportItemTypeNotSupported(
+-                    execution.itemType
++            // All tokens must first be sent to the Create Policy.
++            if (execution.recipient != address(this)) {
++                revert Errors.CreatePolicy_UnexpectedTokenRecipient(
++                    execution.itemType,
++                    execution.token,
++                    execution.identifier,
++                    execution.amount,
++                    execution.recipient,
++                    address(this)
+                 );
+             }
+         }
+     }
+ 
++    /**
++     * @dev Safe transfer for ERC20 tokens that do not consistently return true/false.
++     *
++     * @param token Asset address which is being sent.
++     * @param to    Destination address for the transfer.
++     * @param value Amount of the asset being transferred.
++     */
++    function _transferERC20(address token, address to, uint256 value) internal {
++        (bool success, bytes memory data) = token.call(
++            abi.encodeWithSelector(IERC20.transfer.selector, to, value)
++        );
++
++        if (!success || (data.length != 0 && !abi.decode(data, (bool)))) {
++            revert Errors.Shared_ERC20TransferFailed(token, address(this), to, value);
++        }
++    }
++
++    /**
++     * @dev Helper function to transfer an ERC721 token.
++     *
++     * @param item      Item which will be transferred.
++     * @param recipient Address which will receive the token.
++     */
++    function _transferERC721(Item memory item, address recipient) internal {
++        IERC721(item.token).safeTransferFrom(address(this), recipient, item.identifier);
++    }
++
++    /**
++     * @dev Helper function to transfer an ERC1155 token.
++     *
++     * @param item      Item which will be transferred.
++     * @param recipient Address which will receive the token.
++     */
++    function _transferERC1155(Item memory item, address recipient) internal {
++        IERC1155(item.token).safeTransferFrom(
++            address(this),
++            recipient,
++            item.identifier,
++            item.amount,
++            ""
++        );
++    }
++
+     /////////////////////////////////////////////////////////////////////////////////
+     //                            External Functions                               //
+     /////////////////////////////////////////////////////////////////////////////////
+@@ -773,4 +819,42 @@ contract Create is Policy, Signer, Zone, Accumulator {
+         // Return the selector of validateOrder as the magic value.
+         validOrderMagicValue = ZoneInterface.validateOrder.selector;
+     }
++
++    /**
++     * @notice Handles the callback when receiving ERC721 tokens.
++     */
++    function onERC721Received(
++        address,
++        address,
++        uint256,
++        bytes calldata
++    ) external pure returns (bytes4) {
++        return 0x150b7a02;
++    }
++
++    /**
++     * @notice Handles the callback when receiving ERC1155 tokens.
++     */
++    function onERC1155Received(
++        address,
++        address,
++        uint256,
++        uint256,
++        bytes calldata
++    ) external pure returns (bytes4) {
++        return 0xf23a6e61;
++    }
++
++    /**
++     * @notice Handles the callback when receiving multiple ERC1155 tokens.
++     */
++    function onERC1155BatchReceived(
++        address,
++        address,
++        uint256[] calldata,
++        uint256[] calldata,
++        bytes calldata
++    ) external pure returns (bytes4) {
++        return 0xbc197c81;
++    }
+ }
+diff --git a/smart-contracts/src/policies/Guard.sol b/smart-contracts/src/policies/Guard.sol
+index a0a565a..d4a8164 100644
+--- a/smart-contracts/src/policies/Guard.sol
++++ b/smart-contracts/src/policies/Guard.sol
+@@ -26,6 +26,7 @@ import {
+     gnosis_safe_set_guard_selector,
+     gnosis_safe_enable_module_selector,
+     gnosis_safe_disable_module_selector,
++    gnosis_safe_set_fallback_handler_selector,
+     gnosis_safe_enable_module_offset,
+     gnosis_safe_disable_module_offset
+ } from "@src/libraries/RentalConstants.sol";
+@@ -289,6 +290,13 @@ contract Guard is Policy, BaseGuard {
+                     gnosis_safe_set_guard_selector
+                 );
+             }
++
++            // Revert if the `setFallbackHandler` selector is specified.
++            if (selector == gnosis_safe_set_fallback_handler_selector) {
++                revert Errors.GuardPolicy_UnauthorizedSelector(
++                    gnosis_safe_set_fallback_handler_selector
++                );
++            }
+         }
+     }
+ 

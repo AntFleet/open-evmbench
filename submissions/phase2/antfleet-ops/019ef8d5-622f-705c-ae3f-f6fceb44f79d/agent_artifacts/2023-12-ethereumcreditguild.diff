@@ -1,0 +1,68 @@
+diff --git a/src/governance/ProfitManager.sol b/src/governance/ProfitManager.sol
+index e7b6010..b0e806f 100644
+--- a/src/governance/ProfitManager.sol
++++ b/src/governance/ProfitManager.sol
+@@ -410,19 +410,20 @@ contract ProfitManager is CoreRef {
+         address user,
+         address gauge
+     ) public returns (uint256 creditEarned) {
+-        uint256 _userGaugeWeight = uint256(
+-            GuildToken(guild).getUserGaugeWeight(user, gauge)
+-        );
+-        if (_userGaugeWeight == 0) {
+-            return 0;
+-        }
+         uint256 _gaugeProfitIndex = gaugeProfitIndex[gauge];
+-        uint256 _userGaugeProfitIndex = userGaugeProfitIndex[user][gauge];
+         if (_gaugeProfitIndex == 0) {
+             _gaugeProfitIndex = 1e18;
+         }
++        uint256 _userGaugeProfitIndex = userGaugeProfitIndex[user][gauge];
+         if (_userGaugeProfitIndex == 0) {
+-            _userGaugeProfitIndex = 1e18;
++            userGaugeProfitIndex[user][gauge] = _gaugeProfitIndex;
++            _userGaugeProfitIndex = _gaugeProfitIndex;
++        }
++        uint256 _userGaugeWeight = uint256(
++            GuildToken(guild).getUserGaugeWeight(user, gauge)
++        );
++        if (_userGaugeWeight == 0) {
++            return 0;
+         }
+         uint256 deltaIndex = _gaugeProfitIndex - _userGaugeProfitIndex;
+         if (deltaIndex != 0) {
+@@ -473,7 +474,7 @@ contract ProfitManager is CoreRef {
+                 _gaugeProfitIndex = 1e18;
+             }
+             if (_userGaugeProfitIndex == 0) {
+-                _userGaugeProfitIndex = 1e18;
++                _userGaugeProfitIndex = _gaugeProfitIndex;
+             }
+             uint256 deltaIndex = _gaugeProfitIndex - _userGaugeProfitIndex;
+             if (deltaIndex != 0) {
+diff --git a/src/tokens/ERC20RebaseDistributor.sol b/src/tokens/ERC20RebaseDistributor.sol
+index 07ba797..9fbd9dd 100644
+--- a/src/tokens/ERC20RebaseDistributor.sol
++++ b/src/tokens/ERC20RebaseDistributor.sol
+@@ -554,6 +554,10 @@ abstract contract ERC20RebaseDistributor is ERC20 {
+         address to,
+         uint256 amount
+     ) public virtual override returns (bool) {
++        require(
++            to != msg.sender,
++            "ERC20RebaseDistributor: self transfer"
++        );
+         // if `from` is rebasing, materialize the tokens from rebase to ensure
+         // proper behavior in `ERC20.transfer()`.
+         RebasingState memory rebasingStateFrom = rebasingState[msg.sender];
+@@ -648,6 +652,10 @@ abstract contract ERC20RebaseDistributor is ERC20 {
+         address to,
+         uint256 amount
+     ) public virtual override returns (bool) {
++        require(
++            to != from,
++            "ERC20RebaseDistributor: self transfer"
++        );
+         // if `from` is rebasing, materialize the tokens from rebase to ensure
+         // proper behavior in `ERC20.transfer()`.
+         RebasingState memory rebasingStateFrom = rebasingState[from];

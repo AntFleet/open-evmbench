@@ -1,0 +1,75 @@
+diff --git a/packages/protocol/contracts/team/TimelockTokenPool.sol b/packages/protocol/contracts/team/TimelockTokenPool.sol
+index 44850ab..83fae1d 100644
+--- a/packages/protocol/contracts/team/TimelockTokenPool.sol
++++ b/packages/protocol/contracts/team/TimelockTokenPool.sol
+@@ -79,7 +79,10 @@ contract TimelockTokenPool is EssentialContract {
+     /// @notice Mapping of recipient address to grant information.
+     mapping(address recipient => Recipient receipt) public recipients;
+ 
+-    uint128[44] private __gap;
++    /// @notice Mapping of recipient address to the next withdrawal nonce.
++    mapping(address recipient => uint256 withdrawalNonce) public withdrawalNonces;
++
++    uint128[43] private __gap;
+ 
+     /// @notice Emitted when a grant is made.
+     /// @param recipient The grant recipient address.
+@@ -100,7 +103,9 @@ contract TimelockTokenPool is EssentialContract {
+ 
+     error ALREADY_GRANTED();
+     error INVALID_GRANT();
++    error INVALID_NONCE();
+     error INVALID_PARAM();
++    error INVALID_SIGNATURE();
+     error NOTHING_TO_VOID();
+ 
+     /// @notice Initializes the contract.
+@@ -164,12 +169,19 @@ contract TimelockTokenPool is EssentialContract {
+ 
+     /// @notice Withdraws all withdrawable tokens.
+     /// @param _to The address where the granted and unlocked tokens shall be sent to.
++    /// @param _nonce The nonce to be used.
+     /// @param _sig Signature provided by the grant recipient.
+-    function withdraw(address _to, bytes memory _sig) external {
++    function withdraw(address _to, uint256 _nonce, bytes memory _sig) external {
+         if (_to == address(0)) revert INVALID_PARAM();
+-        bytes32 hash = keccak256(abi.encodePacked("Withdraw unlocked Taiko token to: ", _to));
+-        address recipient = ECDSA.recover(hash, _sig);
+-        _withdraw(recipient, _to);
++
++        bytes32 hash =
++            keccak256(abi.encodePacked("Withdraw unlocked Taiko token to: ", _to, _nonce));
++        address account = ECDSA.recover(hash, _sig);
++        if (account == address(0)) revert INVALID_SIGNATURE();
++        if (withdrawalNonces[account] != _nonce) revert INVALID_NONCE();
++
++        withdrawalNonces[account] += 1;
++        _withdraw(account, _to);
+     }
+ 
+     /// @notice Returns the summary of the grant for a given recipient.
+diff --git a/packages/protocol/contracts/team/airdrop/ERC20Airdrop2.sol b/packages/protocol/contracts/team/airdrop/ERC20Airdrop2.sol
+index 4ae538b..0ea7721 100644
+--- a/packages/protocol/contracts/team/airdrop/ERC20Airdrop2.sol
++++ b/packages/protocol/contracts/team/airdrop/ERC20Airdrop2.sol
+@@ -12,6 +12,8 @@ import "./MerkleClaimable.sol";
+ contract ERC20Airdrop2 is MerkleClaimable {
+     using LibMath for uint256;
+ 
++    uint256 public constant WITHDRAWAL_GRACE_PERIOD = 30 days;
++
+     /// @notice The address of the token contract.
+     address public token;
+ 
+@@ -37,7 +39,10 @@ contract ERC20Airdrop2 is MerkleClaimable {
+     error WITHDRAWALS_NOT_ONGOING();
+ 
+     modifier ongoingWithdrawals() {
+-        if (claimEnd > block.timestamp || claimEnd + withdrawalWindow < block.timestamp) {
++        if (
++            claimEnd > block.timestamp
++                || claimEnd + withdrawalWindow + WITHDRAWAL_GRACE_PERIOD < block.timestamp
++        ) {
+             revert WITHDRAWALS_NOT_ONGOING();
+         }
+         _;

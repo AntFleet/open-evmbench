@@ -1,0 +1,47 @@
+diff --git a/src/accountants/PanopticVaultAccountant.sol b/src/accountants/PanopticVaultAccountant.sol
+index e42bcf4..07eda1e 100644
+--- a/src/accountants/PanopticVaultAccountant.sol
++++ b/src/accountants/PanopticVaultAccountant.sol
+@@ -109,6 +109,8 @@ contract PanopticVaultAccountant is Ownable {
+         // resolves stack too deep error
+         address _vault = vault;
+ 
++        int256 totalExposure;
++
+         for (uint256 i = 0; i < pools.length; i++) {
+             if (
+                 Math.abs(
+@@ -132,8 +134,8 @@ contract PanopticVaultAccountant is Ownable {
+                     int256(uint256(shortPremium.rightSlot())) -
+                     int256(uint256(longPremium.rightSlot()));
+                 poolExposure1 =
+-                    int256(uint256(longPremium.leftSlot())) -
+-                    int256(uint256(shortPremium.leftSlot()));
++                    int256(uint256(shortPremium.leftSlot())) -
++                    int256(uint256(longPremium.leftSlot()));
+             }
+ 
+             uint256 numLegs;
+@@ -246,8 +248,7 @@ contract PanopticVaultAccountant is Ownable {
+                 poolExposure1 = PanopticMath.convert1to0(poolExposure1, conversionPrice);
+             }
+ 
+-            // debt in pools with negative exposure does not need to be paid back
+-            nav += uint256(Math.max(poolExposure0 + poolExposure1, 0));
++            totalExposure += poolExposure0 + poolExposure1;
+         }
+ 
+         // underlying cannot be native (0x000/0xeee)
+@@ -255,6 +256,11 @@ contract PanopticVaultAccountant is Ownable {
+         for (uint256 i = 0; i < underlyingTokens.length; i++) {
+             if (underlyingTokens[i] == underlyingToken) skipUnderlying = true;
+         }
+-        if (!skipUnderlying) nav += IERC20Partial(underlyingToken).balanceOf(_vault);
++        if (!skipUnderlying) {
++            totalExposure += int256(IERC20Partial(underlyingToken).balanceOf(_vault));
++        }
++
++        // debt in pools with negative exposure does not need to be paid back
++        nav = uint256(Math.max(totalExposure, 0));
+     }
+ }
