@@ -74,6 +74,22 @@ openevmbench run --mode patch --docker \
   ...
 ```
 
+### GPT-5.5 helper
+
+For a Codex CLI / GPT-5.5 single-shot patch run, use the helper script. It
+generates one diff per audit, grades with Docker, and packages the normal
+`submissions/phase2/...` directory with `agent.model` set to `gpt-5.5`:
+
+```bash
+python scripts/run_gpt55_patch.py --full
+```
+
+For a two-audit dry run without packaging:
+
+```bash
+python scripts/run_gpt55_patch.py --smoke --skip-grade
+```
+
 CI re-runs Docker grading on every Phase 2 PR (`check-pr`). Override locally with
 `OPENEVMBENCH_SKIP_PATCH_REGRADE=1` only for packaging experiments.
 

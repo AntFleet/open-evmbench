@@ -51,6 +51,7 @@ upstream/
 
 # Audit-source cache (regenerable via scripts/fetch_audit_sources.py)
 audit_sources/
+audit_sources_*/
 
 # Tooling session state
 .omc/

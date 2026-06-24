@@ -1,0 +1,65 @@
+# Grade GPT-5.5 Phase 2 Patch diffs on native GitHub Actions amd64.
+name: patch-gpt55
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      OPENEVMBENCH_OPERATOR_USER: antfleet-ops
+      OPENEVMBENCH_OPERATOR_ID: "285575208"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Build evmbench/patch-base
+        run: |
+          docker build -f docker/evmbench-patch-base.Dockerfile \
+            -t evmbench/patch-base:latest docker/
+
+      - name: Fetch pinned upstream dataset
+        run: python -c "from openevmbench.upstream import ensure_upstream; ensure_upstream()"
+
+      - name: Require complete GPT-5.5 diff set
+        run: |
+          set -euo pipefail
+          expected="$(wc -l < upstream/frontier-evals/project/evmbench/splits/patch-tasks.txt | tr -d ' ')"
+          actual="$(find runs/gpt-5.5-patch/diffs -maxdepth 1 -type f -name '*.diff' | wc -l | tr -d ' ')"
+          if [ "$actual" != "$expected" ]; then
+            echo "expected $expected diffs, found $actual" >&2
+            exit 1
+          fi
+          find runs/gpt-5.5-patch/diffs -maxdepth 1 -type f -name '*.diff' -size 0 -print -quit | grep -q . && {
+            echo "found empty diff" >&2
+            exit 1
+          } || true
+
+      - name: Grade and package GPT-5.5 patch diffs
+        run: |
+          python scripts/run_gpt55_patch.py --full --skip-agent \
+            --diffs runs/gpt-5.5-patch/diffs \
+            --operator-user "$OPENEVMBENCH_OPERATOR_USER" \
+            --operator-id "$OPENEVMBENCH_OPERATOR_ID"
+
+      - name: Upload GPT-5.5 package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpt-5.5-patch-package
+          path: submissions/phase2/antfleet-ops/
+          retention-days: 14
+          if-no-files-found: ignore

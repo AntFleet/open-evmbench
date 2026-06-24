@@ -1,0 +1,35 @@
+diff --git a/contracts/StablecoinDEX.sol b/contracts/StablecoinDEX.sol
+index 4c59976..0f3be9e 100644
+--- a/contracts/StablecoinDEX.sol
++++ b/contracts/StablecoinDEX.sol
+@@ -258,6 +258,7 @@ contract StablecoinDEX {
+     function cancel(uint128 orderId) external {
+         Order storage order = orders[orderId];
+         if (order.maker == address(0)) revert OrderDoesNotExist();
++        if (msg.sender != order.maker) revert Unauthorized();
+ 
+         _cancelOrder(orderId, order);
+     }
+@@ -364,7 +365,6 @@ contract StablecoinDEX {
+ 
+     /**
+      * @notice Internal function to process withdrawals
+-     * @dev Uses unchecked arithmetic for gas optimization
+      * @param user User address
+      * @param token Token address
+      * @param amount Amount to withdraw
+@@ -374,10 +374,10 @@ contract StablecoinDEX {
+         address token,
+         uint128 amount
+     ) internal {
+-        unchecked {
+-            balances[user][token] -= amount;
+-            totalDeposits[token] -= amount;
+-        }
++        if (balances[user][token] < amount) revert InsufficientBalance();
++
++        balances[user][token] -= amount;
++        totalDeposits[token] -= amount;
+         IERC20(token).safeTransfer(user, amount);
+     }
+ 
