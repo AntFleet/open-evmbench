@@ -1,0 +1,92 @@
+# Real Phase 2 Patch run: Composer 2.5 agent diffs + Docker grade on amd64.
+name: patch-composer
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "smoke = 2 audits; full = 22 audits + package artifact"
+        required: true
+        type: choice
+        options:
+          - smoke
+          - full
+        default: smoke
+
+permissions:
+  contents: read
+
+jobs:
+  composer-patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+      OPENEVMBENCH_OPERATOR_USER: antfleet-ops
+      OPENEVMBENCH_OPERATOR_ID: "285575208"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Install Cursor CLI
+        run: |
+          curl https://cursor.com/install -fsS | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cursor/bin" >> "$GITHUB_PATH"
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Build evmbench/patch-base
+        run: |
+          docker build -f docker/evmbench-patch-base.Dockerfile \
+            -t evmbench/patch-base:latest docker/
+
+      - name: Fetch pinned upstream dataset
+        run: python -c "from openevmbench.upstream import ensure_upstream; ensure_upstream()"
+
+      - name: Require CURSOR_API_KEY
+        run: |
+          if [ -z "${CURSOR_API_KEY:-}" ]; then
+            echo "Missing repository secret CURSOR_API_KEY" >&2
+            exit 1
+          fi
+
+      - name: Run Composer patch (${{ inputs.mode }})
+        run: |
+          FLAG=--full
+          if [ "${{ inputs.mode }}" = "smoke" ]; then FLAG=--smoke; fi
+          python scripts/run_composer_patch.py "$FLAG" \
+            --operator-user "$OPENEVMBENCH_OPERATOR_USER" \
+            --operator-id "$OPENEVMBENCH_OPERATOR_ID"
+
+      - name: Upload agent diffs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: composer-2.5-patch-diffs-${{ inputs.mode }}
+          path: runs/composer-2.5-patch/diffs/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Upload submission package
+        if: inputs.mode == 'full' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: composer-2.5-patch-package
+          path: submissions/phase2/antfleet-ops/
+          retention-days: 14
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "mode=${{ inputs.mode }}"
+          echo "Artifacts: composer-2.5-patch-diffs-${{ inputs.mode }}"
+          if [ "${{ inputs.mode }}" = "full" ]; then
+            echo "On success: composer-2.5-patch-package under submissions/phase2/antfleet-ops/"
+          fi

@@ -86,11 +86,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default="audit_sources")
     parser.add_argument("--upstream", default="upstream/frontier-evals")
+    parser.add_argument("--split", default=constants.DETECT_SPLIT,
+                        help=f"split name under upstream/splits/ (default: {constants.DETECT_SPLIT})")
     parser.add_argument("--audits", default=None, help="comma-separated subset of audit IDs")
     args = parser.parse_args(argv)
 
     evmbench_root = Path(args.upstream) / constants.UPSTREAM_SUBDIR
-    split = (evmbench_root / "splits" / f"{constants.DETECT_SPLIT}.txt").read_text().split()
+    split_path = evmbench_root / "splits" / f"{args.split}.txt"
+    if not split_path.is_file():
+        print(f"error: missing split file: {split_path}", file=sys.stderr)
+        return 1
+    split = split_path.read_text(encoding="utf-8").split()
     if args.audits:
         wanted = set(args.audits.split(","))
         unknown = wanted - set(split)
