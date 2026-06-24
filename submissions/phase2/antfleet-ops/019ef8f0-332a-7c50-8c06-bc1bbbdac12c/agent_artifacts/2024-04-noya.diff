@@ -1,0 +1,43 @@
+diff --git a/contracts/connectors/BalancerFlashLoan.sol b/contracts/connectors/BalancerFlashLoan.sol
+index 5e48767..1da4de0 100644
+--- a/contracts/connectors/BalancerFlashLoan.sol
++++ b/contracts/connectors/BalancerFlashLoan.sol
+@@ -44,6 +44,11 @@ contract BalancerFlashLoan is IFlashLoanRecipient, ReentrancyGuard {
+         caller = address(0);
+     }
+ 
++    function isValidCaller(uint256 vaultId) external view returns (bool) {
++        (,,, address keeperContract,,) = registry.getGovernanceAddresses(vaultId);
++        return caller == keeperContract;
++    }
++
+     /**
+      * @notice Receive the flash loan
+      * @param tokens - tokens to flash loan
+diff --git a/contracts/helpers/BaseConnector.sol b/contracts/helpers/BaseConnector.sol
+index 9c33ddb..55c23d5 100644
+--- a/contracts/helpers/BaseConnector.sol
++++ b/contracts/helpers/BaseConnector.sol
+@@ -12,6 +12,10 @@ import "../governance/Watchers.sol";
+ import "@openzeppelin/contracts-5.0/token/ERC721/IERC721Receiver.sol";
+ import "@openzeppelin/contracts-5.0/utils/ReentrancyGuard.sol";
+ 
++interface IBalancerFlashLoan {
++    function isValidCaller(uint256 vaultId) external view returns (bool);
++}
++
+ struct BaseConnectorCP {
+     PositionRegistry registry;
+     uint256 vaultId;
+@@ -95,7 +99,10 @@ contract BaseConnector is NoyaGovernanceBase, IConnector, ReentrancyGuard {
+ 
+             IERC20(token).safeTransfer(address(accountingManager), newAmount);
+             amount = newAmount;
+-        } else if (registry.isAnActiveConnector(vaultId, msg.sender) || msg.sender == registry.flashLoan()) {
++        } else if (msg.sender == registry.flashLoan()) {
++            if (!IBalancerFlashLoan(msg.sender).isValidCaller(vaultId)) revert IConnector_InvalidSender();
++            IERC20(token).safeTransfer(address(msg.sender), amount);
++        } else if (registry.isAnActiveConnector(vaultId, msg.sender)) {
+             IERC20(token).safeTransfer(address(msg.sender), amount);
+         } else {
+             uint256 routeId = abi.decode(data, (uint256));
