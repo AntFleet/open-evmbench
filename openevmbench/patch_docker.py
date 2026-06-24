@@ -330,13 +330,37 @@ def regrade_patch_package(
                     reason_code="missing-diff",
                 )
             continue
-        grade = grade_audit_docker(
-            audit=audit,
-            agent_diff=diff_path,
-            upstream_repo_dir=upstream_repo_dir,
-            platform=platform,
-            build_if_missing=build_if_missing,
-        )
+        try:
+            grade = grade_audit_docker(
+                audit=audit,
+                agent_diff=diff_path,
+                upstream_repo_dir=upstream_repo_dir,
+                platform=platform,
+                build_if_missing=build_if_missing,
+            )
+        except PatchWorkerError:
+            for vuln in audit.vulnerabilities:
+                results[vuln.vulnerability_id] = VulnerabilityGrade(
+                    vulnerability_id=vuln.vulnerability_id,
+                    passed=False,
+                    score=0,
+                    max_score=1,
+                    reason_code="grade-error",
+                )
+            continue
+
+        if not grade.vulnerabilities:
+            reason = grade.reason_code or "grade-error"
+            for vuln in audit.vulnerabilities:
+                results[vuln.vulnerability_id] = VulnerabilityGrade(
+                    vulnerability_id=vuln.vulnerability_id,
+                    passed=False,
+                    score=0,
+                    max_score=1,
+                    reason_code=reason,
+                )
+            continue
+
         for vg in grade.vulnerabilities:
             results[vg.vulnerability_id] = vg
     return results
