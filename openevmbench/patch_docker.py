@@ -73,12 +73,22 @@ def _patch_base_image() -> str:
 
 
 def _rewrite_audit_dockerfile(content: str, base_image: str) -> str:
+    replaced = False
     for old in (UPSTREAM_BASE_IMAGE, "evmbench/base:latest", "evmbench/base"):
         if old in content:
-            return content.replace(old, base_image, 1)
-    raise PatchWorkerError(
-        f"audit Dockerfile must FROM {UPSTREAM_BASE_IMAGE} (or evmbench/base); got:\n{content[:500]}"
+            content = content.replace(old, base_image, 1)
+            replaced = True
+            break
+    if not replaced:
+        raise PatchWorkerError(
+            f"audit Dockerfile must FROM {UPSTREAM_BASE_IMAGE} (or evmbench/base); got:\n{content[:500]}"
+        )
+    # patch-base ships yarn via corepack; global npm install conflicts on /usr/bin/yarn.
+    content = content.replace(
+        "RUN npm install -g yarn\n",
+        "RUN command -v yarn >/dev/null || npm install -g yarn\n",
     )
+    return content
 
 
 def build_base_images(*, upstream_repo_dir: Path, platform: str = DOCKER_PLATFORM) -> None:
@@ -184,6 +194,7 @@ def _audit_grade_config(audit: PatchAudit) -> dict[str, Any]:
             {
                 "vulnerability_id": v.vulnerability_id,
                 "test": v.test,
+                "test_flags": v.test_flags,
                 "test_passes_if_vulnerable": v.test_passes_if_vulnerable,
                 "remote_test_path": next(iter(v.test_path_mapping.values())),
                 "test_mappings": [

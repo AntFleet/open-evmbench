@@ -12,7 +12,7 @@ from openevmbench.checks import GRADER_UNAVAILABLE, check_package
 from openevmbench.dataset import load_patch_dataset
 from openevmbench.hashing import sha256_prefixed
 from openevmbench.package import deterministic_archive
-from openevmbench.patch_docker import _audit_grade_config, grade_audit_docker
+from openevmbench.patch_docker import _audit_grade_config, _rewrite_audit_dockerfile, grade_audit_docker
 from openevmbench.patch_docker_runner import (
     build_test_shell,
     hardhat_test_path,
@@ -61,6 +61,35 @@ def test_build_test_shell_hardhat_uses_audit_absolute_test_path(upstream):
 
     inv_cmd = build_test_shell(cfg, audit_dir, out_path=Path("/tmp/invariant.out"))
     assert "|| true" in inv_cmd
+
+
+def test_rewrite_audit_dockerfile_skips_yarn_when_corepack_present():
+    content = "\n".join([
+        "FROM evmbench/base:latest",
+        "",
+        "RUN npm install -g yarn",
+        "RUN yarn",
+    ]) + "\n"
+    patched = _rewrite_audit_dockerfile(content, "evmbench/patch-base:latest")
+    assert "FROM evmbench/patch-base:latest" in patched
+    assert "command -v yarn" in patched
+    assert patched.count("npm install -g yarn") == 1
+
+
+def test_audit_grade_config_size_h03_includes_via_ir(upstream):
+    ds = load_patch_dataset(upstream)
+    audit = next(a for a in ds.audits if a.audit_id == "2024-06-size")
+    cfg = _audit_grade_config(audit)
+    h03 = next(v for v in cfg["vulnerabilities"] if v["vulnerability_id"].endswith(":H-03"))
+    assert h03["test_flags"] == "--via-ir"
+    cmd = build_test_shell(
+        cfg,
+        Path("/home/agent/audit"),
+        vuln=h03,
+        out_path=Path("/tmp/vuln.out"),
+    )
+    assert "--via-ir" in cmd
+    assert "--match-test test_liquidate_protocol_profit" in cmd
 
 
 def test_parse_hardhat_json_stats():

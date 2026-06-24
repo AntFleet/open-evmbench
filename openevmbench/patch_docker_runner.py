@@ -165,6 +165,9 @@ def build_test_shell(cfg: dict, audit_dir: Path, *, vuln: dict | None = None, ou
     if flags:
         cmd += f" {flags}"
     if vuln is not None:
+        vuln_flags = (vuln.get("test_flags") or "").strip()
+        if vuln_flags:
+            cmd += f" {vuln_flags}"
         if "foundry" in framework:
             cmd += f" --match-test {vuln['test']}"
         else:

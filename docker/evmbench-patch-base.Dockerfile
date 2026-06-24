@@ -18,7 +18,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates gnupg \
-    git python3 python-is-python3 \
+    git python3 python-is-python3 python3-pip \
+    unzip \
     build-essential pkg-config libssl-dev \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
