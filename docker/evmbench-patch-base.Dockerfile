@@ -15,6 +15,8 @@ ENV WORKSPACE_BASE=/home \
 ENV PATH=$FOUNDRY_DIR/bin:$PATH
 ENV HOME=$AGENT_DIR
 ENV DEBIAN_FRONTEND=noninteractive
+# Ubuntu 24.04 blocks system-wide pip unless opted in; audit Dockerfiles use pip install.
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates gnupg \
