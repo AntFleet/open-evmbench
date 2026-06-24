@@ -1,0 +1,100 @@
+diff --git a/tokenomics/contracts/staking/GnosisDepositProcessorL1.sol b/tokenomics/contracts/staking/GnosisDepositProcessorL1.sol
+index 63af9e0..39b893d 100644
+--- a/tokenomics/contracts/staking/GnosisDepositProcessorL1.sol
++++ b/tokenomics/contracts/staking/GnosisDepositProcessorL1.sol
+@@ -15,10 +15,9 @@ interface IBridge {
+     function requireToPassMessage(address target, bytes memory data, uint256 maxGasLimit) external returns (bytes32);
+ 
+     // Contract: Omnibridge Multi-Token Mediator Proxy
+-    // Source: https://github.com/omni/omnibridge/blob/c814f686487c50462b132b9691fd77cc2de237d3/contracts/upgradeable_contracts/components/common/TokensRelayer.sol#L80
+-    // Flattened: https://vscode.blockscan.com/gnosis/0x2dbdcc6cad1a5a11fd6337244407bc06162aaf92
++    // Source: https://github.com/omni/omnibridge/blob/c814f686487c50462b132b9691fd77cc2de237d3/contracts/upgradeable_contracts/components/common/TokensRelayer.sol#L54
+     // Doc: https://docs.gnosischain.com/bridges/Token%20Bridge/omnibridge
+-    function relayTokensAndCall(address token, address receiver, uint256 amount, bytes memory payload) external;
++    function relayTokens(address token, address receiver, uint256 amount) external;
+ 
+     // Source: https://github.com/omni/omnibridge/blob/c814f686487c50462b132b9691fd77cc2de237d3/contracts/interfaces/IAMB.sol#L14
+     // Doc: https://docs.gnosischain.com/bridges/Token%20Bridge/amb-bridge#security-considerations-for-receiving-a-call
+@@ -59,38 +58,36 @@ contract GnosisDepositProcessorL1 is DefaultDepositProcessorL1 {
+             revert IncorrectDataLength(BRIDGE_PAYLOAD_LENGTH, bridgePayload.length);
+         }
+ 
+-        // Transfer OLAS together with message, or just a message
++        // Transfer OLAS tokens
+         if (transferAmount > 0) {
+             // Approve tokens for the bridge contract
+             IToken(olas).approve(l1TokenRelayer, transferAmount);
+ 
+-            bytes memory data = abi.encode(targets, stakingIncentives);
+-            IBridge(l1TokenRelayer).relayTokensAndCall(olas, l2TargetDispenser, transferAmount, data);
++            // Transfer tokens
++            IBridge(l1TokenRelayer).relayTokens(olas, l2TargetDispenser, transferAmount);
++        }
+ 
+-            sequence = stakingBatchNonce;
+-        } else {
+-            // Assemble AMB data payload
+-            bytes memory data = abi.encodeWithSelector(RECEIVE_MESSAGE, abi.encode(targets, stakingIncentives));
++        // Assemble AMB data payload
++        bytes memory data = abi.encodeWithSelector(RECEIVE_MESSAGE, abi.encode(targets, stakingIncentives));
+ 
+-            // In the current configuration, maxGasPerTx is set to 4000000 on Ethereum and 2000000 on Gnosis Chain.
+-            // Source: https://docs.gnosischain.com/bridges/Token%20Bridge/amb-bridge#how-to-check-if-amb-is-down-not-relaying-message
+-            uint256 gasLimitMessage = abi.decode(bridgePayload, (uint256));
++        // In the current configuration, maxGasPerTx is set to 4000000 on Ethereum and 2000000 on Gnosis Chain.
++        // Source: https://docs.gnosischain.com/bridges/Token%20Bridge/amb-bridge#how-to-check-if-amb-is-down-not-relaying-message
++        uint256 gasLimitMessage = abi.decode(bridgePayload, (uint256));
+ 
+-            // Check for zero value
+-            if (gasLimitMessage == 0) {
+-                revert ZeroValue();
+-            }
++        // Check for zero value
++        if (gasLimitMessage == 0) {
++            revert ZeroValue();
++        }
+ 
+-            // Check for the max gas limit
+-            if (gasLimitMessage > MESSAGE_GAS_LIMIT) {
+-                revert Overflow(gasLimitMessage, MESSAGE_GAS_LIMIT);
+-            }
++        // Check for the max gas limit
++        if (gasLimitMessage > MESSAGE_GAS_LIMIT) {
++            revert Overflow(gasLimitMessage, MESSAGE_GAS_LIMIT);
++        }
+ 
+-            // Send message to L2
+-            bytes32 iMsg = IBridge(l1MessageRelayer).requireToPassMessage(l2TargetDispenser, data, gasLimitMessage);
++        // Send message to L2
++        bytes32 iMsg = IBridge(l1MessageRelayer).requireToPassMessage(l2TargetDispenser, data, gasLimitMessage);
+ 
+-            sequence = uint256(iMsg);
+-        }
++        sequence = uint256(iMsg);
+     }
+ 
+     /// @dev Process message received from L2.
+diff --git a/tokenomics/contracts/staking/GnosisTargetDispenserL2.sol b/tokenomics/contracts/staking/GnosisTargetDispenserL2.sol
+index 88d22b0..dda45b8 100644
+--- a/tokenomics/contracts/staking/GnosisTargetDispenserL2.sol
++++ b/tokenomics/contracts/staking/GnosisTargetDispenserL2.sol
+@@ -91,18 +91,4 @@ contract GnosisTargetDispenserL2 is DefaultTargetDispenserL2 {
+         // Process the data
+         _receiveMessage(msg.sender, processor, data);
+     }
+-
+-    // Source: https://github.com/omni/omnibridge/blob/c814f686487c50462b132b9691fd77cc2de237d3/contracts/upgradeable_contracts/BasicOmnibridge.sol#L464
+-    // Source: https://github.com/omni/omnibridge/blob/master/contracts/interfaces/IERC20Receiver.sol
+-    /// @dev Processes the data received together with the token transfer from L1.
+-    /// @param data Bytes message data sent from L1.
+-    function onTokenBridged(address, uint256, bytes calldata data) external {
+-        // Check for the message to come from the L2 token relayer
+-        if (msg.sender != l2TokenRelayer) {
+-            revert TargetRelayerOnly(msg.sender, l2TokenRelayer);
+-        }
+-
+-        // Process the data
+-        _receiveMessage(l2MessageRelayer, l1DepositProcessor, data);
+-    }
+ }
+\ No newline at end of file

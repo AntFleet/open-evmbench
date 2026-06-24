@@ -1,0 +1,13 @@
+diff --git a/contracts/AlgebraCLVe33/GaugeFactoryCL.sol b/contracts/AlgebraCLVe33/GaugeFactoryCL.sol
+index ca03860..229c18b 100644
+--- a/contracts/AlgebraCLVe33/GaugeFactoryCL.sol
++++ b/contracts/AlgebraCLVe33/GaugeFactoryCL.sol
+@@ -57,7 +57,7 @@ contract GaugeFactoryCL is IGaugeFactoryCL, OwnableUpgradeable {
+     }
+ 
+     function createGauge(address _rewardToken,address _ve,address _pool,address _distribution, address _internal_bribe, address _external_bribe, bool _isPair, 
+-                        IGaugeManager.FarmingParam memory farmingParam, address _bonusRewardToken) external returns (address) {
++                        IGaugeManager.FarmingParam memory farmingParam, address _bonusRewardToken) external onlyAllowed returns (address) {
+         
+ 
+         createEternalFarming(_pool, farmingParam.algebraEternalFarming, _rewardToken, _bonusRewardToken);

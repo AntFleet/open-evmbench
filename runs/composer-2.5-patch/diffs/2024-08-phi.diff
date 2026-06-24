@@ -1,0 +1,120 @@
+diff --git a/src/Cred.sol b/src/Cred.sol
+index 606b13f..ad4d781 100644
+--- a/src/Cred.sol
++++ b/src/Cred.sol
+@@ -238,6 +238,7 @@ contract Cred is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable, Pausab
+     )
+         public
+         payable
++        nonReentrant
+         whenNotPaused
+     {
+         if (_recoverSigner(keccak256(signedData_), signature_) != phiSignerAddress) revert AddressNotSigned();
+@@ -425,7 +426,8 @@ contract Cred is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable, Pausab
+     /// @param curator_ The address to check.
+     /// @return The number of shares the address has for the cred.
+     function getShareNumber(uint256 credId_, address curator_) external view returns (uint256) {
+-        return shareBalance[credId_].get(curator_);
++        (, uint256 amount) = shareBalance[credId_].tryGet(curator_);
++        return amount;
+     }
+ 
+     function getCuratorAddressLength(uint256 credId_) external view returns (uint256) {
+@@ -509,7 +511,7 @@ contract Cred is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable, Pausab
+         for (uint256 i = start_; i < stopIndex; i++) {
+             uint256 credId = userCredIds[i];
+             if (_credIdExistsPerAddress[curator_][credId]) {
+-                uint256 amount = shareBalance[credId].get(curator_);
++                (, uint256 amount) = shareBalance[credId].tryGet(curator_);
+                 credIds[i] = credId;
+                 amounts[i] = amount;
+                 index++;
+@@ -676,8 +678,10 @@ contract Cred is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable, Pausab
+             if ((currentNum - amount_) == 0) {
+                 _removeCredIdPerAddress(credId_, sender_);
+                 _credIdExistsPerAddress[sender_][credId_] = false;
++                shareBalance[credId_].remove(sender_);
++            } else {
++                shareBalance[credId_].set(sender_, currentNum - amount_);
+             }
+-            shareBalance[credId_].set(sender_, currentNum - amount_);
+         }
+     }
+ 
+@@ -910,10 +914,14 @@ contract Cred is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable, Pausab
+             stopIndex = stop_;
+         }
+ 
+-        if (start_ >= stopIndex) {
++        if (start_ > stopIndex) {
+             revert InvalidPaginationParameters();
+         }
+ 
++        if (start_ == stopIndex) {
++            return new CuratorData[](0);
++        }
++
+         CuratorData[] memory result = new CuratorData[](stopIndex - start_);
+         uint256 index = 0;
+ 
+diff --git a/src/PhiFactory.sol b/src/PhiFactory.sol
+index 45fb934..a4c7f49 100644
+--- a/src/PhiFactory.sol
++++ b/src/PhiFactory.sol
+@@ -204,7 +204,7 @@ contract PhiFactory is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable,
+         whenNotPaused
+         returns (address)
+     {
+-        _validateArtCreationSignature(signedData_, signature_);
++        _validateArtCreationSignature(signedData_, signature_, createConfig_);
+         (, string memory uri_, bytes memory credData) = abi.decode(signedData_, (uint256, string, bytes));
+         ERC1155Data memory erc1155Data = _createERC1155Data(artIdCounter, createConfig_, uri_, credData);
+         address artAddress = createERC1155Internal(artIdCounter, erc1155Data);
+@@ -336,8 +336,10 @@ contract PhiFactory is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable,
+         (uint256 expiresIn_, address minter_, address ref_, address verifier_, uint256 artId_,, bytes32 data_) =
+             abi.decode(encodeData_, (uint256, address, address, address, uint256, uint256, bytes32));
+ 
++        bytes memory claimData = abi.encode(expiresIn_, minter_, ref_, verifier_, artId_, block.chainid, data_);
++
+         if (expiresIn_ <= block.timestamp) revert SignatureExpired();
+-        if (_recoverSigner(keccak256(encodeData_), signature_) != phiSignerAddress) revert AddressNotSigned();
++        if (_recoverSigner(keccak256(claimData), signature_) != phiSignerAddress) revert AddressNotSigned();
+ 
+         _validateAndUpdateClaimState(artId_, minter_, mintArgs_.quantity);
+         _processClaim(artId_, minter_, ref_, verifier_, mintArgs_.quantity, data_, mintArgs_.imageURI, msg.value);
+@@ -586,9 +588,32 @@ contract PhiFactory is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable,
+         if (createData_.endTime <= createData_.startTime) revert EndTimeLessThanOrEqualToStartTime();
+     }
+ 
+-    function _validateArtCreationSignature(bytes calldata signedData_, bytes calldata signature_) private view {
+-        if (_recoverSigner(keccak256(signedData_), signature_) != phiSignerAddress) revert AddressNotSigned();
+-        (uint256 expiresIn_,,) = abi.decode(signedData_, (uint256, string, bytes));
++    function _validateArtCreationSignature(
++        bytes calldata signedData_,
++        bytes calldata signature_,
++        CreateConfig memory createConfig_
++    )
++        private
++        view
++    {
++        (uint256 expiresIn_, string memory uri_, bytes memory credData_) =
++            abi.decode(signedData_, (uint256, string, bytes));
++
++        bytes memory extendedSignedData = abi.encode(
++            expiresIn_,
++            uri_,
++            credData_,
++            createConfig_.artist,
++            createConfig_.receiver,
++            createConfig_.endTime,
++            createConfig_.startTime,
++            createConfig_.maxSupply,
++            createConfig_.mintFee,
++            createConfig_.soulBounded,
++            _msgSender()
++        );
++
++        if (_recoverSigner(keccak256(extendedSignedData), signature_) != phiSignerAddress) revert AddressNotSigned();
+         if (expiresIn_ <= block.timestamp) revert SignatureExpired();
+     }
+ 

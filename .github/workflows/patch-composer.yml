@@ -5,12 +5,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "smoke = 2 audits; full = 22 audits + package artifact"
+        description: "smoke/full = agent+grade; grade-only = Docker grade existing diffs in runs/composer-2.5-patch/diffs/"
         required: true
         type: choice
         options:
           - smoke
           - full
+          - grade-only
         default: smoke
 
 permissions:
@@ -51,6 +52,7 @@ jobs:
         run: python -c "from openevmbench.upstream import ensure_upstream; ensure_upstream()"
 
       - name: Require CURSOR_API_KEY
+        if: inputs.mode != 'grade-only'
         run: |
           if [ -z "${CURSOR_API_KEY:-}" ]; then
             echo "Missing repository secret CURSOR_API_KEY" >&2
@@ -59,9 +61,14 @@ jobs:
 
       - name: Run Composer patch (${{ inputs.mode }})
         run: |
+          EXTRA=()
           FLAG=--full
           if [ "${{ inputs.mode }}" = "smoke" ]; then FLAG=--smoke; fi
-          python scripts/run_composer_patch.py "$FLAG" \
+          if [ "${{ inputs.mode }}" = "grade-only" ]; then
+            FLAG=--full
+            EXTRA=(--skip-agent)
+          fi
+          python scripts/run_composer_patch.py "$FLAG" "${EXTRA[@]}" \
             --operator-user "$OPENEVMBENCH_OPERATOR_USER" \
             --operator-id "$OPENEVMBENCH_OPERATOR_ID"
 
@@ -75,7 +82,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload submission package
-        if: inputs.mode == 'full' && success()
+        if: (inputs.mode == 'full' || inputs.mode == 'grade-only') && success()
         uses: actions/upload-artifact@v4
         with:
           name: composer-2.5-patch-package
