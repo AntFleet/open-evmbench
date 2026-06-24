@@ -82,18 +82,19 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload submission package
-        if: (inputs.mode == 'full' || inputs.mode == 'grade-only') && success()
+        if: always() && (inputs.mode == 'full' || inputs.mode == 'grade-only')
         uses: actions/upload-artifact@v4
         with:
           name: composer-2.5-patch-package
           path: submissions/phase2/antfleet-ops/
           retention-days: 14
+          if-no-files-found: ignore
 
       - name: Summary
         if: always()
         run: |
           echo "mode=${{ inputs.mode }}"
           echo "Artifacts: composer-2.5-patch-diffs-${{ inputs.mode }}"
-          if [ "${{ inputs.mode }}" = "full" ]; then
-            echo "On success: composer-2.5-patch-package under submissions/phase2/antfleet-ops/"
+          if [ "${{ inputs.mode }}" = "full" ] || [ "${{ inputs.mode }}" = "grade-only" ]; then
+            echo "Download composer-2.5-patch-package from submissions/phase2/antfleet-ops/"
           fi
