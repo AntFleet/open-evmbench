@@ -1,0 +1,16 @@
+{
+  "$comment": "Cursor CLI fleet rows. Patch rows use patch_auditor.py; Detect rows use auditor.py (restore separately).",
+  "rows": [
+    {
+      "id": "composer-2.5-patch",
+      "model": "composer-2.5",
+      "phase": 2,
+      "mode": "patch",
+      "scaffold_name": "cursor-fleet-patch-single-shot",
+      "scaffold_file": "agents/cursor_fleet/patch_auditor.py",
+      "harness_kind": "single-shot",
+      "pace_seconds": 5,
+      "rationale": "First real Phase 2 Patch row — Cursor Composer 2.5 single-shot per audit."
+    }
+  ]
+}
