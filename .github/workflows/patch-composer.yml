@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "smoke/full = agent+grade; grade-only = Docker grade existing diffs in runs/composer-2.5-patch/diffs/"
+        description: "smoke/full = agent+grade; grade-only = Docker grade existing diffs"
         required: true
         type: choice
         options:
@@ -13,6 +13,14 @@ on:
           - full
           - grade-only
         default: smoke
+      target:
+        description: "Patch run target"
+        required: true
+        type: choice
+        options:
+          - composer
+          - gpt55
+        default: composer
 
 permissions:
   contents: read
@@ -35,6 +43,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Install Cursor CLI
+        if: inputs.target == 'composer'
         run: |
           curl https://cursor.com/install -fsS | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
@@ -52,14 +61,30 @@ jobs:
         run: python -c "from openevmbench.upstream import ensure_upstream; ensure_upstream()"
 
       - name: Require CURSOR_API_KEY
-        if: inputs.mode != 'grade-only'
+        if: inputs.target == 'composer' && inputs.mode != 'grade-only'
         run: |
           if [ -z "${CURSOR_API_KEY:-}" ]; then
             echo "Missing repository secret CURSOR_API_KEY" >&2
             exit 1
           fi
 
-      - name: Run Composer patch (${{ inputs.mode }})
+      - name: Require complete GPT-5.5 diff set
+        if: inputs.target == 'gpt55'
+        run: |
+          set -euo pipefail
+          expected="$(wc -l < upstream/frontier-evals/project/evmbench/splits/patch-tasks.txt | tr -d ' ')"
+          actual="$(find runs/gpt-5.5-patch/diffs -maxdepth 1 -type f -name '*.diff' | wc -l | tr -d ' ')"
+          if [ "$actual" != "$expected" ]; then
+            echo "expected $expected GPT-5.5 diffs, found $actual" >&2
+            exit 1
+          fi
+          empty="$(find runs/gpt-5.5-patch/diffs -maxdepth 1 -type f -name '*.diff' -size 0 -print -quit)"
+          if [ -n "$empty" ]; then
+            echo "found empty diff: $empty" >&2
+            exit 1
+          fi
+
+      - name: Run Patch target (${{ inputs.target }} / ${{ inputs.mode }})
         run: |
           EXTRA=()
           FLAG=--full
@@ -68,16 +93,25 @@ jobs:
             FLAG=--full
             EXTRA=(--skip-agent)
           fi
-          python scripts/run_composer_patch.py "$FLAG" "${EXTRA[@]}" \
-            --operator-user "$OPENEVMBENCH_OPERATOR_USER" \
-            --operator-id "$OPENEVMBENCH_OPERATOR_ID"
+          if [ "${{ inputs.target }}" = "gpt55" ]; then
+            python scripts/run_gpt55_patch.py "$FLAG" --skip-agent \
+              --diffs runs/gpt-5.5-patch/diffs \
+              --operator-user "$OPENEVMBENCH_OPERATOR_USER" \
+              --operator-id "$OPENEVMBENCH_OPERATOR_ID"
+          else
+            python scripts/run_composer_patch.py "$FLAG" "${EXTRA[@]}" \
+              --operator-user "$OPENEVMBENCH_OPERATOR_USER" \
+              --operator-id "$OPENEVMBENCH_OPERATOR_ID"
+          fi
 
       - name: Upload agent diffs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: composer-2.5-patch-diffs-${{ inputs.mode }}
-          path: runs/composer-2.5-patch/diffs/
+          name: ${{ inputs.target }}-patch-diffs-${{ inputs.mode }}
+          path: |
+            runs/composer-2.5-patch/diffs/
+            runs/gpt-5.5-patch/diffs/
           retention-days: 14
           if-no-files-found: ignore
 
@@ -85,7 +119,7 @@ jobs:
         if: always() && (inputs.mode == 'full' || inputs.mode == 'grade-only')
         uses: actions/upload-artifact@v4
         with:
-          name: composer-2.5-patch-package
+          name: ${{ inputs.target }}-patch-package
           path: submissions/phase2/antfleet-ops/
           retention-days: 14
           if-no-files-found: ignore
@@ -94,7 +128,8 @@ jobs:
         if: always()
         run: |
           echo "mode=${{ inputs.mode }}"
-          echo "Artifacts: composer-2.5-patch-diffs-${{ inputs.mode }}"
+          echo "target=${{ inputs.target }}"
+          echo "Artifacts: ${{ inputs.target }}-patch-diffs-${{ inputs.mode }}"
           if [ "${{ inputs.mode }}" = "full" ] || [ "${{ inputs.mode }}" = "grade-only" ]; then
-            echo "Download composer-2.5-patch-package from submissions/phase2/antfleet-ops/"
+            echo "Download ${{ inputs.target }}-patch-package from submissions/phase2/antfleet-ops/"
           fi
