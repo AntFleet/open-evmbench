@@ -1,0 +1,238 @@
+diff --git a/smart-contracts/src/libraries/Errors.sol b/smart-contracts/src/libraries/Errors.sol
+index 5625d18..1ab4110 100644
+--- a/smart-contracts/src/libraries/Errors.sol
++++ b/smart-contracts/src/libraries/Errors.sol
+@@ -103,6 +103,25 @@ library Errors {
+         address expectedOwner
+     );
+ 
++    /**
++     * @dev Thrown when an expected rental or payment execution was not fulfilled.
++     *
++     * @param itemType          The item type of the token.
++     * @param token             Address of the token.
++     * @param identifier        ID of the token.
++     * @param expectedAmount    Amount expected to be fulfilled.
++     * @param fulfilledAmount   Amount that was actually fulfilled.
++     * @param expectedRecipient Address that was expected to receive the token.
++     */
++    error CreatePolicy_IncompleteExecution(
++        ItemType itemType,
++        address token,
++        uint256 identifier,
++        uint256 expectedAmount,
++        uint256 fulfilledAmount,
++        address expectedRecipient
++    );
++
+     /**
+      * @dev Thrown when the count of either rental or payment items are zero.
+      *
+diff --git a/smart-contracts/src/libraries/RentalConstants.sol b/smart-contracts/src/libraries/RentalConstants.sol
+index d05c90c..40c2113 100644
+--- a/smart-contracts/src/libraries/RentalConstants.sol
++++ b/smart-contracts/src/libraries/RentalConstants.sol
+@@ -51,6 +51,9 @@ uint256 constant e1155_safe_batch_transfer_from_token_id_offset = 0x64;
+ // bytes4(keccak256("setGuard(address)"));
+ bytes4 constant gnosis_safe_set_guard_selector = 0xe19a9dd9;
+ 
++// bytes4(keccak256("setFallbackHandler(address)"));
++bytes4 constant gnosis_safe_set_fallback_handler_selector = 0xf08a0323;
++
+ // bytes4(keccak256("enableModule(address)"));
+ bytes4 constant gnosis_safe_enable_module_selector = 0x610b5925;
+ 
+diff --git a/smart-contracts/src/policies/Create.sol b/smart-contracts/src/policies/Create.sol
+index 061180d..9928e4d 100644
+--- a/smart-contracts/src/policies/Create.sol
++++ b/smart-contracts/src/policies/Create.sol
+@@ -557,6 +557,13 @@ contract Create is Policy, Signer, Zone, Accumulator {
+             payload.metadata.orderType.isBaseOrder() ||
+             payload.metadata.orderType.isPayOrder()
+         ) {
++            // Check: verify that each expected rental and payment item was fulfilled.
++            _executionInvariantChecks(
++                seaportPayload.totalExecutions,
++                payload.fulfillment.recipient,
++                items
++            );
++
+             // Create an accumulator which will hold all of the rental asset updates, consisting of IDs and
+             // the rented amount. From this point on, new memory cannot be safely allocated until the
+             // accumulator no longer needs to include elements.
+@@ -679,6 +686,119 @@ contract Create is Policy, Signer, Zone, Accumulator {
+         }
+     }
+ 
++    /**
++     * @dev Helper function to check if two items have the same type and token.
++     *
++     * @param left  Item to compare.
++     * @param right Item to compare against.
++     *
++     * @return Whether the items match.
++     */
++    function _sameItem(
++        Item memory left,
++        Item memory right
++    ) internal pure returns (bool) {
++        return
++            left.itemType == right.itemType &&
++            left.token == right.token &&
++            left.identifier == right.identifier;
++    }
++
++    /**
++     * @dev Helper function to check if an execution matches an item.
++     *
++     * @param execution         Execution performed by Seaport.
++     * @param item              Item expected to be fulfilled.
++     * @param expectedRecipient Address expected to receive the item.
++     *
++     * @return Whether the execution matches the item.
++     */
++    function _executionMatchesItem(
++        ReceivedItem memory execution,
++        Item memory item,
++        address expectedRecipient
++    ) internal pure returns (bool) {
++        if (
++            execution.token != item.token ||
++            execution.identifier != item.identifier ||
++            execution.recipient != expectedRecipient
++        ) {
++            return false;
++        }
++
++        if (item.isERC20()) {
++            return execution.isERC20();
++        } else if (item.isERC721()) {
++            return execution.isERC721();
++        } else {
++            return execution.isERC1155();
++        }
++    }
++
++    /**
++     * @dev Helper function to get the recipient expected to receive an item.
++     *
++     * @param item               Item expected to be fulfilled.
++     * @param expectedRentalSafe Address which should receive rental assets.
++     *
++     * @return Expected recipient for the item.
++     */
++    function _expectedRecipientForItem(
++        Item memory item,
++        address expectedRentalSafe
++    ) internal view returns (address) {
++        if (item.isERC20()) {
++            return address(ESCRW);
++        } else {
++            return expectedRentalSafe;
++        }
++    }
++
++    /**
++     * @dev Helper function to check that an expected item was fulfilled.
++     *
++     * @param executions         Each execution that was performed by Seaport.
++     * @param items              Items expected to be fulfilled.
++     * @param item               Item to check.
++     * @param expectedRentalSafe Address which should receive rental assets.
++     */
++    function _checkExpectedExecution(
++        ReceivedItem[] memory executions,
++        Item[] memory items,
++        Item memory item,
++        address expectedRentalSafe
++    ) internal view {
++        address expectedRecipient = _expectedRecipientForItem(
++            item,
++            expectedRentalSafe
++        );
++        uint256 expectedAmount;
++        uint256 fulfilledAmount;
++
++        for (uint256 i = 0; i < items.length; ++i) {
++            if (_sameItem(items[i], item)) {
++                expectedAmount += items[i].amount;
++            }
++        }
++
++        for (uint256 i = 0; i < executions.length; ++i) {
++            if (_executionMatchesItem(executions[i], item, expectedRecipient)) {
++                fulfilledAmount += executions[i].amount;
++            }
++        }
++
++        if (fulfilledAmount < expectedAmount) {
++            revert Errors.CreatePolicy_IncompleteExecution(
++                item.itemType,
++                item.token,
++                item.identifier,
++                expectedAmount,
++                fulfilledAmount,
++                expectedRecipient
++            );
++        }
++    }
++
+     /**
+      * @dev After a Seaport order has been executed, invariant checks are made to ensure
+      *      that all assets are owned by the correct addresses. More specifically, all
+@@ -713,6 +833,29 @@ contract Create is Policy, Signer, Zone, Accumulator {
+         }
+     }
+ 
++    /**
++     * @dev After a Seaport order has been executed, invariant checks are made to ensure
++     *      that all expected rental and payment items were included in the executions.
++     *
++     * @param executions Each execution that was performed by Seaport.
++     * @param expectedRentalSafe The intended recipient of the rental assets.
++     * @param items Items expected to be fulfilled.
++     */
++    function _executionInvariantChecks(
++        ReceivedItem[] memory executions,
++        address expectedRentalSafe,
++        Item[] memory items
++    ) internal view {
++        for (uint256 i = 0; i < items.length; ++i) {
++            _checkExpectedExecution(
++                executions,
++                items,
++                items[i],
++                expectedRentalSafe
++            );
++        }
++    }
++
+     /////////////////////////////////////////////////////////////////////////////////
+     //                            External Functions                               //
+     /////////////////////////////////////////////////////////////////////////////////
+diff --git a/smart-contracts/src/policies/Guard.sol b/smart-contracts/src/policies/Guard.sol
+index a0a565a..a87fb58 100644
+--- a/smart-contracts/src/policies/Guard.sol
++++ b/smart-contracts/src/policies/Guard.sol
+@@ -24,6 +24,7 @@ import {
+     e1155_safe_transfer_from_token_id_offset,
+     e1155_safe_batch_transfer_from_token_id_offset,
+     gnosis_safe_set_guard_selector,
++    gnosis_safe_set_fallback_handler_selector,
+     gnosis_safe_enable_module_selector,
+     gnosis_safe_disable_module_selector,
+     gnosis_safe_enable_module_offset,
+@@ -289,6 +290,13 @@ contract Guard is Policy, BaseGuard {
+                     gnosis_safe_set_guard_selector
+                 );
+             }
++
++            // Revert if the `setFallbackHandler` selector is specified.
++            if (selector == gnosis_safe_set_fallback_handler_selector) {
++                revert Errors.GuardPolicy_UnauthorizedSelector(
++                    gnosis_safe_set_fallback_handler_selector
++                );
++            }
+         }
+     }
+ 
