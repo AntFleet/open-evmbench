@@ -303,6 +303,17 @@
         "score": 1,
         "reason_code": "patched"
       }
-    ]
+    ],
+    "official_score": 0.9773
+  },
+  "state": "accepted",
+  "state_reason": null,
+  "prize_review_status": null,
+  "prize_review_reason": null,
+  "antfleet_acceptance": {
+    "signature": "ed25519:StGL2wvKeCss3r9UzzyAEuQfdv11hUOtbsemXwlPvbwyLKu3sdCujWyO1bWbz70Zt4vM9lbt7IscPCU/HCXTDA==",
+    "acceptance_record_hash": "sha256:e53d47a5c2e498ea90ece764cde7a484f9608a574ba7bf90f6ac58728179ac1b",
+    "signed_at": "2026-06-24T15:27:38Z",
+    "public_key_fingerprint": "sha256:d0ad47a590f27d40d89f7bd7008bc3330a46d47101580baead7b959ebd51221b"
   }
 }
