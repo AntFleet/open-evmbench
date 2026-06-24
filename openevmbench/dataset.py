@@ -140,6 +140,7 @@ class PatchVulnerability:
     vuln_id: str
     title: str
     test: str
+    test_flags: str
     test_passes_if_vulnerable: bool
     test_path_mapping: dict[str, str]
     patch_path_mapping: dict[str, str]
@@ -210,6 +211,7 @@ def _load_patch_audit_config(root: Path, audit_id: str) -> PatchAudit:
                 vuln_id=v["id"],
                 title=v.get("title", v["id"]),
                 test=v["test"],
+                test_flags=v.get("test_flags") or "",
                 test_passes_if_vulnerable=bool(v.get("test_passes_if_vulnerable", True)),
                 test_path_mapping=dict(v.get("test_path_mapping") or {}),
                 patch_path_mapping=dict(v.get("patch_path_mapping") or {}),
