@@ -306,8 +306,8 @@
     ],
     "official_score": 0.9773
   },
-  "state": "promoted",
-  "state_reason": null,
+  "state": "yanked",
+  "state_reason": "Finding-fed task mode: the scaffold injected each audit finding (root cause + recommended fix) and the target file, so this run measures 'implement a described fix', not the detect+patch task the 41.5% Patch SOTA measures. Not comparable to the SOTA; removed from the board pending a blind-audit re-run. See docs/PHASE2_GAMEABILITY.md section 4b.",
   "prize_review_status": null,
   "prize_review_reason": null,
   "antfleet_acceptance": {
