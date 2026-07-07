@@ -1,0 +1,47 @@
+diff --git a/src/governance/ProfitManager.sol b/src/governance/ProfitManager.sol
+index e7b6010..042df0f 100644
+--- a/src/governance/ProfitManager.sol
++++ b/src/governance/ProfitManager.sol
+@@ -410,13 +410,16 @@ contract ProfitManager is CoreRef {
+         address user,
+         address gauge
+     ) public returns (uint256 creditEarned) {
++        uint256 _gaugeProfitIndex = gaugeProfitIndex[gauge];
+         uint256 _userGaugeWeight = uint256(
+             GuildToken(guild).getUserGaugeWeight(user, gauge)
+         );
+         if (_userGaugeWeight == 0) {
++            if (_gaugeProfitIndex != 0) {
++                userGaugeProfitIndex[user][gauge] = _gaugeProfitIndex;
++            }
+             return 0;
+         }
+-        uint256 _gaugeProfitIndex = gaugeProfitIndex[gauge];
+         uint256 _userGaugeProfitIndex = userGaugeProfitIndex[user][gauge];
+         if (_gaugeProfitIndex == 0) {
+             _gaugeProfitIndex = 1e18;
+diff --git a/src/loan/SurplusGuildMinter.sol b/src/loan/SurplusGuildMinter.sol
+index f68e9ff..e1d78b8 100644
+--- a/src/loan/SurplusGuildMinter.sol
++++ b/src/loan/SurplusGuildMinter.sol
+@@ -226,15 +226,16 @@ contract SurplusGuildMinter is CoreRef {
+     {
+         bool updateState;
+         lastGaugeLoss = GuildToken(guild).lastGaugeLoss(term);
+-        if (lastGaugeLoss > uint256(userStake.lastGaugeLoss)) {
+-            slashed = true;
+-        }
++        userStake = _stakes[user][term];
+ 
+         // if the user is not staking, do nothing
+-        userStake = _stakes[user][term];
+         if (userStake.stakeTime == 0)
+             return (lastGaugeLoss, userStake, slashed);
+ 
++        if (lastGaugeLoss > uint256(userStake.lastGaugeLoss)) {
++            slashed = true;
++        }
++
+         // compute CREDIT rewards
+         ProfitManager(profitManager).claimRewards(address(this)); // this will update profit indexes
+         uint256 _profitIndex = ProfitManager(profitManager)

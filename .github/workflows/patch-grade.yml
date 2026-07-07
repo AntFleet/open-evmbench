@@ -1,0 +1,66 @@
+# Grade a directory of Phase 2 patch diffs on native amd64 (deterministic).
+# Used to score the blind-audit (paper-comparable) Codex run without local
+# amd64 emulation. Uploads results.json.
+name: patch-grade
+
+on:
+  workflow_dispatch:
+    inputs:
+      diffs_dir:
+        description: "directory of <audit-id>.diff files"
+        required: true
+        default: "runs/blind-patch/diffs"
+
+permissions:
+  contents: read
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Build evmbench/patch-base
+        run: |
+          docker build -f docker/evmbench-patch-base.Dockerfile \
+            -t evmbench/patch-base:latest docker/
+
+      - name: Fetch pinned upstream dataset
+        run: python -c "from openevmbench.upstream import ensure_upstream; ensure_upstream()"
+
+      - name: Grade diffs
+        run: |
+          python scripts/grade_patch_diffs.py \
+            --diffs "${{ inputs.diffs_dir }}" --out runs/blind-patch
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blind-patch-grade
+          path: runs/blind-patch/results.json
+          retention-days: 30
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Blind-audit patch grade" >> "$GITHUB_STEP_SUMMARY"
+          python - <<'EOF' >> "$GITHUB_STEP_SUMMARY" || true
+          import json
+          d = json.load(open("runs/blind-patch/results.json"))
+          solved = sum(v["score"] for v in d.values())
+          errs = [a for a, v in d.items() if str(v.get("reason","")).startswith("grade-error")]
+          print(f"**{solved}/44 = {solved/44*100:.1f}%**  ({len(d)}/22 audits graded)")
+          if errs:
+              print(f"\ngrade-errors: {errs}")
+          EOF

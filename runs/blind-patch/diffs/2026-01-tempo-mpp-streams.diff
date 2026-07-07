@@ -1,0 +1,197 @@
+diff --git a/contracts/TempoStreamChannel.sol b/contracts/TempoStreamChannel.sol
+index 1cab3e6..5f0c9fd 100644
+--- a/contracts/TempoStreamChannel.sol
++++ b/contracts/TempoStreamChannel.sol
+@@ -160,6 +160,7 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
+     error NonceTooLow();
+     error GracePeriodNotEnded();
+     error GracePeriodActive();
++    error GracePeriodEnded();
+     error UnauthorizedCaller();
+     error InvalidAmount();
+     error ZeroAddress();
+@@ -202,6 +203,36 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
+         return ecrecover(digest, v, r, s);
+     }
+ 
++    function _validateVoucher(
++        Channel storage channel,
++        Voucher calldata voucher,
++        bytes calldata signature
++    ) internal view returns (uint256 delta) {
++        if (block.timestamp > voucher.expiry) revert VoucherExpired();
++        if (voucher.nonce <= settledNonces[voucher.channelId])
++            revert NonceTooLow();
++
++        bytes32 structHash = keccak256(
++            abi.encode(
++                VOUCHER_TYPEHASH,
++                voucher.channelId,
++                voucher.cumulativeAmount,
++                voucher.nonce,
++                voucher.expiry
++            )
++        );
++
++        bytes32 digest = _hashTypedDataV4(structHash);
++        address signer = _recoverSigner(digest, signature);
++
++        if (signer != channel.authorizedSigner) revert InvalidSigner();
++        if (voucher.cumulativeAmount < channel.settled) revert InvalidAmount();
++        if (voucher.cumulativeAmount > channel.deposit)
++            revert InsufficientDeposit();
++
++        delta = voucher.cumulativeAmount - channel.settled;
++    }
++
+     // =============================================================
+     //                      CHANNEL OPERATIONS
+     // =============================================================
+@@ -226,7 +257,10 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
+         uint256 deadline
+     ) external nonReentrant returns (bytes32 channelId) {
+         if (payee == address(0)) revert ZeroAddress();
++        if (address(token) == address(0)) revert ZeroAddress();
++        if (authorizedSigner == address(0)) revert ZeroAddress();
+         if (deposit == 0) revert InvalidAmount();
++        if (block.timestamp > deadline) revert DeadlineExpired();
+ 
+         channelId = keccak256(
+             abi.encodePacked(
+@@ -238,14 +272,18 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
+             )
+         );
+ 
++        uint256 balanceBefore = token.balanceOf(address(this));
+         token.safeTransferFrom(msg.sender, address(this), deposit);
++        uint256 receivedDeposit = token.balanceOf(address(this)) -
++            balanceBefore;
++        if (receivedDeposit == 0) revert InvalidAmount();
+ 
+         channels[channelId] = Channel({
+             payer: msg.sender,
+             payee: payee,
+             authorizedSigner: authorizedSigner,
+             token: token,
+-            deposit: deposit,
++            deposit: receivedDeposit,
+             settled: 0,
+             gracePeriodEnd: 0,
+             finalized: false
+@@ -256,7 +294,7 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
+             msg.sender,
+             payee,
+             address(token),
+-            deposit,
++            receivedDeposit,
+             authorizedSigner
+         );
+     }
+@@ -276,10 +314,15 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
+         if (channel.finalized) revert ChannelAlreadyFinalized();
+         if (amount == 0) revert InvalidAmount();
+ 
++        uint256 balanceBefore = channel.token.balanceOf(address(this));
+         channel.token.safeTransferFrom(msg.sender, address(this), amount);
+-        channel.deposit += amount;
++        uint256 receivedAmount = channel.token.balanceOf(address(this)) -
++            balanceBefore;
++        if (receivedAmount == 0) revert InvalidAmount();
+ 
+-        emit ChannelDeposit(channelId, amount, channel.deposit);
++        channel.deposit += receivedAmount;
++
++        emit ChannelDeposit(channelId, receivedAmount, channel.deposit);
+     }
+ 
+     /**
+@@ -297,28 +340,12 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
+         Channel storage channel = channels[voucher.channelId];
+         if (channel.payer == address(0)) revert ChannelNotFound();
+         if (channel.finalized) revert ChannelAlreadyFinalized();
+-        if (block.timestamp > voucher.expiry) revert VoucherExpired();
+-        if (voucher.nonce <= settledNonces[voucher.channelId])
+-            revert NonceTooLow();
++        if (
++            channel.gracePeriodEnd != 0 &&
++            block.timestamp >= channel.gracePeriodEnd
++        ) revert GracePeriodEnded();
+ 
+-        bytes32 structHash = keccak256(
+-            abi.encode(
+-                VOUCHER_TYPEHASH,
+-                voucher.channelId,
+-                voucher.cumulativeAmount,
+-                voucher.nonce,
+-                voucher.expiry
+-            )
+-        );
+-
+-        bytes32 digest = _hashTypedDataV4(structHash);
+-        address signer = _recoverSigner(digest, signature);
+-
+-        if (signer != channel.authorizedSigner) revert InvalidSigner();
+-
+-        uint256 delta = voucher.cumulativeAmount - channel.settled;
+-        if (delta > channel.deposit - channel.settled)
+-            revert InsufficientDeposit();
++        uint256 delta = _validateVoucher(channel, voucher, signature);
+ 
+         channel.settled = voucher.cumulativeAmount;
+         settledNonces[voucher.channelId] = voucher.nonce;
+@@ -344,6 +371,8 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
+         if (channel.payer == address(0)) revert ChannelNotFound();
+         if (channel.finalized) revert ChannelAlreadyFinalized();
+         if (channel.gracePeriodEnd != 0) revert GracePeriodActive();
++        if (msg.sender != channel.payer && msg.sender != channel.payee)
++            revert UnauthorizedCaller();
+ 
+         channel.gracePeriodEnd = block.timestamp + GRACE_PERIOD;
+ 
+@@ -392,19 +421,7 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
+         if (channel.payer == address(0)) revert ChannelNotFound();
+         if (channel.finalized) revert ChannelAlreadyFinalized();
+ 
+-        bytes32 structHash = keccak256(
+-            abi.encode(
+-                VOUCHER_TYPEHASH,
+-                voucher.channelId,
+-                voucher.cumulativeAmount,
+-                voucher.nonce,
+-                voucher.expiry
+-            )
+-        );
+-        bytes32 digest = _hashTypedDataV4(structHash);
+-        address signer = _recoverSigner(digest, signature);
+-
+-        if (signer != channel.authorizedSigner) revert InvalidSigner();
++        uint256 delta = _validateVoucher(channel, voucher, signature);
+ 
+         bytes32 closeHash = keccak256(
+             abi.encodePacked(
+@@ -420,15 +437,15 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
+         if (payerSigner != channel.payer) revert UnauthorizedCaller();
+ 
+         channel.finalized = true;
++        channel.settled = voucher.cumulativeAmount;
++        settledNonces[voucher.channelId] = voucher.nonce;
+ 
+-        uint256 delta = voucher.cumulativeAmount - channel.settled;
+-
+-        if (delta > 0 && delta <= channel.deposit) {
++        if (delta > 0) {
+             channel.token.safeTransfer(channel.payee, delta);
+         }
+ 
+-        uint256 payerRefund = channel.deposit - voucher.cumulativeAmount;
+-        if (payerRefund > 0 && payerRefund <= channel.deposit) {
++        uint256 payerRefund = channel.deposit - channel.settled;
++        if (payerRefund > 0) {
+             channel.token.safeTransfer(channel.payer, payerRefund);
+         }
+ 
+@@ -475,4 +492,3 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
+         return _domainSeparatorV4();
+     }
+ }
+-

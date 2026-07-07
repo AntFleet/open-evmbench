@@ -1,0 +1,195 @@
+diff --git a/src/Cred.sol b/src/Cred.sol
+index 606b13f..8067e88 100644
+--- a/src/Cred.sol
++++ b/src/Cred.sol
+@@ -175,15 +175,24 @@ contract Cred is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable, Pausab
+     /*//////////////////////////////////////////////////////////////
+                            Buy and Sell
+     //////////////////////////////////////////////////////////////*/
+-    function buyShareCred(uint256 credId_, uint256 amount_, uint256 maxPrice_) public payable {
++    function buyShareCred(uint256 credId_, uint256 amount_, uint256 maxPrice_) public payable nonReentrant {
+         _handleTrade(credId_, amount_, true, _msgSender(), maxPrice_);
+     }
+ 
+-    function sellShareCred(uint256 credId_, uint256 amount_, uint256 minPrice_) public {
++    function sellShareCred(uint256 credId_, uint256 amount_, uint256 minPrice_) public nonReentrant {
+         _handleTrade(credId_, amount_, false, _msgSender(), minPrice_);
+     }
+ 
+-    function buyShareCredFor(uint256 credId_, uint256 amount_, address curator_, uint256 maxPrice_) public payable {
++    function buyShareCredFor(
++        uint256 credId_,
++        uint256 amount_,
++        address curator_,
++        uint256 maxPrice_
++    )
++        public
++        payable
++        nonReentrant
++    {
+         if (curator_ == address(0)) revert InvalidAddressZero();
+         _handleTrade(credId_, amount_, true, curator_, maxPrice_);
+     }
+@@ -254,6 +263,7 @@ contract Cred is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable, Pausab
+         if (expiresIn <= block.timestamp) revert SignatureExpired();
+ 
+         if (sender != _msgSender()) revert Unauthorized();
++        if (creator_ != sender) revert Unauthorized();
+ 
+         if (!curatePriceWhitelist[bondingCurve]) revert Unauthorized();
+ 
+diff --git a/src/PhiFactory.sol b/src/PhiFactory.sol
+index 45fb934..f938b37 100644
+--- a/src/PhiFactory.sol
++++ b/src/PhiFactory.sol
+@@ -204,11 +204,20 @@ contract PhiFactory is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable,
+         whenNotPaused
+         returns (address)
+     {
+-        _validateArtCreationSignature(signedData_, signature_);
++        _validateArtCreationSignature(signedData_, signature_, createConfig_);
++        uint256 creationFee = artCreateFee;
++        if (msg.value < creationFee) revert InvalidMintFee();
++
+         (, string memory uri_, bytes memory credData) = abi.decode(signedData_, (uint256, string, bytes));
+         ERC1155Data memory erc1155Data = _createERC1155Data(artIdCounter, createConfig_, uri_, credData);
+-        address artAddress = createERC1155Internal(artIdCounter, erc1155Data);
++        address artAddress = createERC1155Internal(artIdCounter, erc1155Data, creationFee);
+         artIdCounter++;
++
++        uint256 refund = msg.value - creationFee;
++        if (refund > 0) {
++            _msgSender().safeTransferETH(refund);
++        }
++
+         return artAddress;
+     }
+ 
+@@ -280,6 +289,7 @@ contract PhiFactory is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable,
+             bytes memory claimData = abi.encode(minter_, ref_, artId);
+             MintArgs memory mintArgs = MintArgs({ tokenId: tokenId, quantity: quantity_, imageURI: imageURI_ });
+             uint256 mintFee = getArtMintFee(artId, quantity_);
++            if (msg.value != mintFee) revert InvalidMintFee();
+             this.merkleClaim{ value: mintFee }(proof, claimData, mintArgs, leafPart_);
+         } else if (art.verificationType.eq("SIGNATURE")) {
+             (
+@@ -297,6 +307,7 @@ contract PhiFactory is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable,
+             bytes memory claimData = abi.encode(expiresIn_, minter_, ref_, verifier_, artId, block.chainid, data_);
+             MintArgs memory mintArgs = MintArgs({ tokenId: tokenId, quantity: quantity_, imageURI: imageURI_ });
+             uint256 mintFee = getArtMintFee(artId, quantity_);
++            if (msg.value != mintFee) revert InvalidMintFee();
+             this.signatureClaim{ value: mintFee }(signature_, claimData, mintArgs);
+         } else {
+             revert InvalidVerificationType();
+@@ -548,7 +559,14 @@ contract PhiFactory is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable,
+     /// @dev Internal function to create an ERC1155 art.
+     /// @param createData_ The ERC1155 art data.
+     /// @return The address of the created art contract.
+-    function createERC1155Internal(uint256 newArtId, ERC1155Data memory createData_) internal returns (address) {
++    function createERC1155Internal(
++        uint256 newArtId,
++        ERC1155Data memory createData_,
++        uint256 creationFee_
++    )
++        internal
++        returns (address)
++    {
+         // Todo check if artid exists, if artid exists, reverts
+         _validateArtCreation(createData_);
+         PhiArt storage currentArt = arts[newArtId];
+@@ -559,9 +577,11 @@ contract PhiFactory is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable,
+ 
+         address artAddress;
+         if (credNFTContracts[credChainId][credId] == address(0)) {
+-            artAddress = _createNewNFTContract(currentArt, newArtId, createData_, credId, credChainId, verificationType);
++            artAddress = _createNewNFTContract(
++                currentArt, newArtId, createData_, credId, credChainId, verificationType, creationFee_
++            );
+         } else {
+-            artAddress = _useExistingNFTContract(currentArt, newArtId, createData_, credId, credChainId);
++            artAddress = _useExistingNFTContract(currentArt, newArtId, createData_, credId, credChainId, creationFee_);
+         }
+ 
+         return artAddress;
+@@ -586,9 +606,31 @@ contract PhiFactory is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable,
+         if (createData_.endTime <= createData_.startTime) revert EndTimeLessThanOrEqualToStartTime();
+     }
+ 
+-    function _validateArtCreationSignature(bytes calldata signedData_, bytes calldata signature_) private view {
+-        if (_recoverSigner(keccak256(signedData_), signature_) != phiSignerAddress) revert AddressNotSigned();
+-        (uint256 expiresIn_,,) = abi.decode(signedData_, (uint256, string, bytes));
++    function _validateArtCreationSignature(
++        bytes calldata signedData_,
++        bytes calldata signature_,
++        CreateConfig memory createConfig_
++    )
++        private
++        view
++    {
++        (uint256 expiresIn_, string memory uri_, bytes memory credData_) =
++            abi.decode(signedData_, (uint256, string, bytes));
++        bytes memory signedCreateData = abi.encode(
++            expiresIn_,
++            uri_,
++            credData_,
++            createConfig_.artist,
++            createConfig_.receiver,
++            createConfig_.endTime,
++            createConfig_.startTime,
++            createConfig_.maxSupply,
++            createConfig_.mintFee,
++            createConfig_.soulBounded,
++            _msgSender()
++        );
++
++        if (_recoverSigner(keccak256(signedCreateData), signature_) != phiSignerAddress) revert AddressNotSigned();
+         if (expiresIn_ <= block.timestamp) revert SignatureExpired();
+     }
+ 
+@@ -623,7 +665,8 @@ contract PhiFactory is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable,
+         ERC1155Data memory createData_,
+         uint256 credId,
+         uint256 credChainId,
+-        string memory verificationType
++        string memory verificationType,
++        uint256 creationFee_
+     )
+         private
+         returns (address)
+@@ -638,7 +681,7 @@ contract PhiFactory is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable,
+         credNFTContracts[credChainId][credId] = address(newArt);
+ 
+         (bool success_, bytes memory response) =
+-            newArt.call{ value: msg.value }(abi.encodeWithSignature("createArtFromFactory(uint256)", newArtId));
++            newArt.call{ value: creationFee_ }(abi.encodeWithSignature("createArtFromFactory(uint256)", newArtId));
+ 
+         if (!success_) revert CreateFailed();
+         uint256 tokenId = abi.decode(response, (uint256));
+@@ -653,7 +696,8 @@ contract PhiFactory is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable,
+         uint256 newArtId,
+         ERC1155Data memory createData_,
+         uint256 credId,
+-        uint256 credChainId
++        uint256 credChainId,
++        uint256 creationFee_
+     )
+         private
+         returns (address)
+@@ -661,7 +705,7 @@ contract PhiFactory is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable,
+         address existingArt = credNFTContracts[credChainId][credId];
+         art.artAddress = existingArt;
+         (bool success_, bytes memory response) =
+-            existingArt.call{ value: msg.value }(abi.encodeWithSignature("createArtFromFactory(uint256)", newArtId));
++            existingArt.call{ value: creationFee_ }(abi.encodeWithSignature("createArtFromFactory(uint256)", newArtId));
+ 
+         if (!success_) revert CreateFailed();
+         uint256 tokenId = abi.decode(response, (uint256));
+@@ -706,7 +750,7 @@ contract PhiFactory is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable,
+         if (tx.origin != _msgSender() && msg.sender != art.artAddress && msg.sender != address(this)) {
+             revert TxOriginMismatch();
+         }
+-        if (msg.value < getArtMintFee(artId_, quantity_)) revert InvalidMintFee();
++        if (msg.value != getArtMintFee(artId_, quantity_)) revert InvalidMintFee();
+         if (block.timestamp < art.startTime) revert ArtNotStarted();
+         if (block.timestamp > art.endTime) revert ArtEnded();
+         if (quantity_ == 0) revert InvalidQuantity();

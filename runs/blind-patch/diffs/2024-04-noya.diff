@@ -1,0 +1,280 @@
+diff --git a/contracts/accountingManager/Registry.sol b/contracts/accountingManager/Registry.sol
+index caaa683..7a26ae1 100644
+--- a/contracts/accountingManager/Registry.sol
++++ b/contracts/accountingManager/Registry.sol
+@@ -30,7 +30,7 @@ contract PositionRegistry is AccessControl, IPositionRegistry, ReentrancyGuard {
+     // -------------------- MODIFIERS --------------------
+ 
+     modifier onlyVaultMaintainer(uint256 _vaultId) {
+-        if (msg.sender != vaults[_vaultId].maintainer || hasRole(EMERGENCY_ROLE, msg.sender) == false) {
++        if (msg.sender != vaults[_vaultId].maintainer && hasRole(EMERGENCY_ROLE, msg.sender) == false) {
+             revert UnauthorizedAccess();
+         }
+         _;
+@@ -305,20 +305,16 @@ contract PositionRegistry is AccessControl, IPositionRegistry, ReentrancyGuard {
+             if (!isPositionTrustedForConnector(vaultId, _positionId, msg.sender)) {
+                 revert InvalidPosition(_positionId);
+             }
++            PositionBP memory position = vault.trustedPositionsBP[_positionId];
++            if (position.positionTypeId == 0 && position.calculatorConnector != msg.sender) {
++                if (d.length != 32 || abi.decode(d, (address)) != msg.sender) revert UnauthorizedAccess();
++            }
+             if (vault.holdingPositions.length >= maxNumHoldingPositions) {
+                 revert TooManyPositions();
+             }
+             vault.isPositionUsed[holdingPositionId] = vault.holdingPositions.length;
+-            vault.holdingPositions.push(
+-                HoldingPI(
+-                    vaults[vaultId].trustedPositionsBP[_positionId].calculatorConnector,
+-                    msg.sender,
+-                    _positionId,
+-                    d,
+-                    AD,
+-                    type(uint256).max
+-                )
+-            );
++            vault.holdingPositions
++                .push(HoldingPI(position.calculatorConnector, msg.sender, _positionId, d, AD, type(uint256).max));
+             return vault.holdingPositions.length - 1;
+         }
+         vault.holdingPositions[index].additionalData = AD;
+@@ -326,7 +322,7 @@ contract PositionRegistry is AccessControl, IPositionRegistry, ReentrancyGuard {
+     }
+ 
+     /*
+-    * @dev This function is used to update the information of an holding position (holding position is a position that the connector is holding) 
++    * @dev This function is used to update the information of an holding position (holding position is a position that the connector is holding)
+     * @param vaultId The id of the vault
+     * @param positionIndex The index of the position in the holdingPositions array
+     * @param _data Additional data that the connector needs to manage the position
+@@ -348,13 +344,15 @@ contract PositionRegistry is AccessControl, IPositionRegistry, ReentrancyGuard {
+         if (removePosition) {
+             if (positionIndex < vault.holdingPositions.length - 1) {
+                 vault.holdingPositions[positionIndex] = vault.holdingPositions[vault.holdingPositions.length - 1];
+-                vault.isPositionUsed[keccak256(
+-                    abi.encode(
+-                        vault.holdingPositions[positionIndex].calculatorConnector,
+-                        vault.holdingPositions[positionIndex].positionId,
+-                        vault.holdingPositions[positionIndex].data
++                vault.isPositionUsed[
++                    keccak256(
++                        abi.encode(
++                            vault.holdingPositions[positionIndex].connectorAddress,
++                            vault.holdingPositions[positionIndex].positionId,
++                            vault.holdingPositions[positionIndex].data
++                        )
+                     )
+-                )] = positionIndex;
++                ] = positionIndex;
+             }
+             vault.holdingPositions.pop();
+             vault.isPositionUsed[holdingPositionId] = 0;
+@@ -468,10 +466,8 @@ contract PositionRegistry is AccessControl, IPositionRegistry, ReentrancyGuard {
+      */
+ 
+     function isTokenTrusted(uint256 vaultId, address token, address connector) public view returns (bool) {
+-        return (
+-            vaults[vaultId].connectors[vaults[vaultId].accountManager].trustedTokens[token]
+-                || vaults[vaultId].connectors[connector].trustedTokens[token]
+-        );
++        return (vaults[vaultId].connectors[vaults[vaultId].accountManager].trustedTokens[token]
++                || vaults[vaultId].connectors[connector].trustedTokens[token]);
+     }
+     /**
+      * @dev Calculates a unique ID for a position.
+diff --git a/contracts/connectors/AaveConnector.sol b/contracts/connectors/AaveConnector.sol
+index f667762..85d68b4 100644
+--- a/contracts/connectors/AaveConnector.sol
++++ b/contracts/connectors/AaveConnector.sol
+@@ -113,6 +113,7 @@ contract AaveConnector is BaseConnector {
+ 
+     function _getPositionTVL(HoldingPI memory, address base) public view override returns (uint256 tvl) {
+         (uint256 totalCollateralBase, uint256 totalDebtBase,,,,) = IPool(pool).getUserAccountData(address(this));
++        if (totalDebtBase >= totalCollateralBase) return 0;
+         uint256 poolBaseAmount = totalCollateralBase - totalDebtBase;
+         return valueOracle.getValue(poolBaseToken, base, poolBaseAmount);
+     }
+diff --git a/contracts/connectors/CompoundConnector.sol b/contracts/connectors/CompoundConnector.sol
+index a660861..85e8644 100644
+--- a/contracts/connectors/CompoundConnector.sol
++++ b/contracts/connectors/CompoundConnector.sol
+@@ -127,6 +127,7 @@ contract CompoundConnector is BaseConnector {
+ 
+         uint256 positiveBalance = getCollBlanace(IComet(market), false);
+         uint256 negativeBalance = getBorrowBalanceInBase(IComet(market));
++        if (negativeBalance >= positiveBalance) return 0;
+         uint256 balance = positiveBalance - negativeBalance;
+         return (valueOracle.getValue(IComet(market).baseToken(), base, balance));
+     }
+diff --git a/contracts/connectors/Dolomite.sol b/contracts/connectors/Dolomite.sol
+index e465ce3..a6ee656 100644
+--- a/contracts/connectors/Dolomite.sol
++++ b/contracts/connectors/Dolomite.sol
+@@ -118,6 +118,7 @@ contract DolomiteConnector is BaseConnector {
+                 totalDebt += value;
+             }
+         }
++        if (totalDebt >= totalCollateral) return 0;
+         return totalCollateral - totalDebt;
+     }
+ }
+diff --git a/contracts/connectors/MorphoBlueConnector.sol b/contracts/connectors/MorphoBlueConnector.sol
+index 720faa8..186d0db 100644
+--- a/contracts/connectors/MorphoBlueConnector.sol
++++ b/contracts/connectors/MorphoBlueConnector.sol
+@@ -61,6 +61,8 @@ contract MorphoBlueConnector is BaseConnector {
+             morphoBlue.withdraw(params, amount, 0, address(this), address(this));
+         } else {
+             morphoBlue.withdrawCollateral(params, amount, address(this), address(this));
++            uint256 healthFactor = getHealthFactor(id, morphoBlue.market(id));
++            if (healthFactor < minimumHealthFactor) revert IConnector_LowHealthFactor(healthFactor);
+         }
+         Position memory p = morphoBlue.position(id, address(this));
+         if (p.collateral == 0 && p.supplyShares == 0) {
+@@ -126,11 +128,9 @@ contract MorphoBlueConnector is BaseConnector {
+                 uint256(pos.borrowShares).toAssetsUp(market.totalBorrowAssets, market.totalBorrowShares);
+             uint256 supplyAmount =
+                 uint256(pos.supplyShares).toAssetsUp(market.totalSupplyAssets, market.totalSupplyShares);
+-            tvl = _getValue(
+-                params.loanToken,
+-                base,
+-                supplyAmount + borrowAmount + convertCToL(pos.collateral, params.oracle, params.collateralToken)
+-            );
++            uint256 totalAssets = supplyAmount + convertCToL(pos.collateral, params.oracle, params.collateralToken);
++            if (borrowAmount >= totalAssets) return 0;
++            tvl = _getValue(params.loanToken, base, totalAssets - borrowAmount);
+         }
+     }
+ 
+diff --git a/contracts/connectors/SiloConnector.sol b/contracts/connectors/SiloConnector.sol
+index c526a45..b0174ac 100644
+--- a/contracts/connectors/SiloConnector.sol
++++ b/contracts/connectors/SiloConnector.sol
+@@ -86,6 +86,9 @@ contract SiloConnector is BaseConnector {
+         ISilo silo = ISilo(siloRepository.getSilo(siloToken));
+         silo.borrow(bToken, amount);
+         _updateTokenInRegistry(bToken);
++        if (!SolvencyV2.isSolvent(silo, address(this), minimumHealthFactor)) {
++            revert IConnector_LowHealthFactor(0);
++        }
+         emit Borrow(siloToken, bToken, amount);
+     }
+     /**
+@@ -124,6 +127,7 @@ contract SiloConnector is BaseConnector {
+             totalDepositAmount += depositAmount * price / 1e18;
+             totalBAmount += borrowAmount * price / 1e18;
+         }
++        if (totalBAmount >= totalDepositAmount) return 0;
+         tvl = totalDepositAmount - totalBAmount;
+     }
+ 
+@@ -132,7 +136,7 @@ contract SiloConnector is BaseConnector {
+         for (uint256 i = 0; i < assetsS.length; i++) {
+             if (
+                 IERC20(assetsS[i].collateralToken).balanceOf(address(this))
+-                    + IERC20(assetsS[i].collateralOnlyToken).balanceOf(address(this)) > 0
++                        + IERC20(assetsS[i].collateralOnlyToken).balanceOf(address(this)) > 0
+             ) {
+                 return false;
+             }
+diff --git a/contracts/connectors/UNIv3Connector.sol b/contracts/connectors/UNIv3Connector.sol
+index baccc1c..11fb0c6 100644
+--- a/contracts/connectors/UNIv3Connector.sol
++++ b/contracts/connectors/UNIv3Connector.sol
+@@ -125,28 +125,33 @@ contract UNIv3Connector is BaseConnector, ERC721Holder {
+     }
+ 
+     function _getPositionTVL(HoldingPI memory p, address base) public view override returns (uint256 tvl) {
+-        PositionBP memory positionInfo = registry.getPositionBP(vaultId, p.positionId);
+         uint256 tokenId = abi.decode(p.data, (uint256));
+-        (address token0, address token1) = abi.decode(positionInfo.data, (address, address));
+         uint256 amount0;
+         uint256 amount1;
+-        (int24 tL, int24 tU, uint24 fee) = abi.decode(p.additionalData, (int24, int24, uint24));
+         {
++            (
++                ,,
++                address token0,
++                address token1,
++                uint24 fee,
++                int24 tickLower,
++                int24 tickUpper,
++                uint128 liquidity,,,
++                uint128 tokensOwed0,
++                uint128 tokensOwed1
++            ) = positionManager.positions(tokenId);
+             IUniswapV3Pool pool = IUniswapV3Pool(factory.getPool(token0, token1, fee));
+-            bytes32 key = keccak256(abi.encodePacked(positionManager, tL, tU));
+-
+-            (uint128 liquidity,,, uint128 tokensOwed0, uint128 tokensOwed1) = pool.positions(key);
+ 
+             (uint160 sqrtPriceX96,,,,,,) = pool.slot0();
+             (amount0, amount1) = LiquidityAmounts.getAmountsForLiquidity(
+-                sqrtPriceX96, TickMath.getSqrtRatioAtTick(tL), TickMath.getSqrtRatioAtTick(tU), liquidity
++                sqrtPriceX96, TickMath.getSqrtRatioAtTick(tickLower), TickMath.getSqrtRatioAtTick(tickUpper), liquidity
+             );
+             amount0 += tokensOwed0;
+             amount1 += tokensOwed1;
+-        }
+ 
+-        tvl += valueOracle.getValue(token0, base, amount0);
+-        tvl += valueOracle.getValue(token1, base, amount1);
++            tvl += valueOracle.getValue(token0, base, amount0);
++            tvl += valueOracle.getValue(token1, base, amount1);
++        }
+     }
+ 
+     function _getUnderlyingTokens(uint256, bytes memory data) public pure override returns (address[] memory) {
+diff --git a/contracts/helpers/SwapHandler/GenericSwapAndBridgeHandler.sol b/contracts/helpers/SwapHandler/GenericSwapAndBridgeHandler.sol
+index 106053c..0a3ee64 100644
+--- a/contracts/helpers/SwapHandler/GenericSwapAndBridgeHandler.sol
++++ b/contracts/helpers/SwapHandler/GenericSwapAndBridgeHandler.sol
+@@ -27,7 +27,7 @@ contract SwapAndBridgeHandler is NoyaGovernanceBase, ISwapAndBridgeHandler, Reen
+     }
+ 
+     modifier onlyExistingRoute(uint256 _routeId) {
+-        if (routes[_routeId].route == address(0) && !routes[_routeId].isEnabled) revert RouteNotFound();
++        if (routes[_routeId].route == address(0) || !routes[_routeId].isEnabled) revert RouteNotFound();
+         _;
+     }
+ 
+diff --git a/contracts/helpers/SwapHandler/Implementaions/LifiImplementation.sol b/contracts/helpers/SwapHandler/Implementaions/LifiImplementation.sol
+index 088678a..d5264ab 100644
+--- a/contracts/helpers/SwapHandler/Implementaions/LifiImplementation.sol
++++ b/contracts/helpers/SwapHandler/Implementaions/LifiImplementation.sol
+@@ -98,7 +98,10 @@ contract LifiImplementation is ISwapAndBridgeImplementation, Ownable2Step, Reent
+ 
+         emit Swapped(balanceOut0, balanceOut1, _request.outputToken);
+ 
+-        return balanceOut1 - balanceOut0;
++        uint256 amountOut = balanceOut1 - balanceOut0;
++        if (amountOut < _request.minAmount) revert InvalidMinAmount();
++
++        return amountOut;
+     }
+ 
+     /**
+diff --git a/contracts/helpers/valueOracle/NoyaValueOracle.sol b/contracts/helpers/valueOracle/NoyaValueOracle.sol
+index 868b456..c72ec82 100644
+--- a/contracts/helpers/valueOracle/NoyaValueOracle.sol
++++ b/contracts/helpers/valueOracle/NoyaValueOracle.sol
+@@ -22,7 +22,9 @@ contract NoyaValueOracle is INoyaValueOracle {
+     event UpdatedPriceRoute(address asset, address baseToken, address[] s);
+ 
+     modifier onlyMaintainer() {
+-        if (!registry.hasRole(registry.MAINTAINER_ROLE(), msg.sender)) revert INoyaValueOracle_Unauthorized(msg.sender);
++        if (!registry.hasRole(registry.MAINTAINER_ROLE(), msg.sender)) {
++            revert INoyaValueOracle_Unauthorized(msg.sender);
++        }
+         _;
+     }
+ 
+@@ -86,7 +88,7 @@ contract NoyaValueOracle is INoyaValueOracle {
+         uint256 initialValue = amount;
+         address quotingToken = asset;
+         for (uint256 i = 0; i < sources.length; i++) {
+-            initialValue = _getValue(asset, sources[i], initialValue);
++            initialValue = _getValue(quotingToken, sources[i], initialValue);
+             quotingToken = sources[i];
+         }
+         return _getValue(quotingToken, baseToken, initialValue);

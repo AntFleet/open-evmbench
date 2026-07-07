@@ -1,0 +1,319 @@
+diff --git a/src/Size.sol b/src/Size.sol
+index a41e289..2f9ac3a 100644
+--- a/src/Size.sol
++++ b/src/Size.sol
+@@ -45,6 +45,7 @@ import {CapsLibrary} from "@src/libraries/CapsLibrary.sol";
+ import {RiskLibrary} from "@src/libraries/RiskLibrary.sol";
+ 
+ import {SizeView} from "@src/SizeView.sol";
++import {Errors} from "@src/libraries/Errors.sol";
+ import {Events} from "@src/libraries/Events.sol";
+ 
+ import {IMulticall} from "@src/interfaces/IMulticall.sol";
+@@ -159,7 +160,9 @@ contract Size is ISize, SizeView, Initializable, AccessControlUpgradeable, Pausa
+     function withdraw(WithdrawParams calldata params) external payable override(ISize) whenNotPaused {
+         state.validateWithdraw(params);
+         state.executeWithdraw(params);
+-        state.validateUserIsNotBelowOpeningLimitBorrowCR(msg.sender);
++        if (params.token != address(state.data.underlyingBorrowToken)) {
++            state.validateUserIsNotBelowOpeningLimitBorrowCR(msg.sender);
++        }
+     }
+ 
+     /// @inheritdoc ISize
+@@ -245,9 +248,17 @@ contract Size is ISize, SizeView, Initializable, AccessControlUpgradeable, Pausa
+ 
+     /// @inheritdoc ISize
+     function compensate(CompensateParams calldata params) external payable override(ISize) whenNotPaused {
++        uint256 collateralRatioBefore = state.collateralRatio(msg.sender);
+         state.validateCompensate(params);
+         state.executeCompensate(params);
+-        state.validateUserIsNotUnderwater(msg.sender);
++        uint256 collateralRatioAfter = state.collateralRatio(msg.sender);
++        if (collateralRatioBefore < state.riskConfig.crLiquidation) {
++            if (collateralRatioAfter < collateralRatioBefore) {
++                revert Errors.COLLATERAL_RATIO_DECREASED(msg.sender, collateralRatioBefore, collateralRatioAfter);
++            }
++        } else {
++            state.validateUserIsNotUnderwater(msg.sender);
++        }
+     }
+ 
+     /// @inheritdoc ISize
+diff --git a/src/libraries/AccountingLibrary.sol b/src/libraries/AccountingLibrary.sol
+index aee76de..e1c0d43 100644
+--- a/src/libraries/AccountingLibrary.sol
++++ b/src/libraries/AccountingLibrary.sol
+@@ -66,8 +66,9 @@ library AccountingLibrary {
+         uint256 futureValue,
+         uint256 dueDate
+     ) external returns (CreditPosition memory creditPosition) {
+-        DebtPosition memory debtPosition =
+-            DebtPosition({borrower: borrower, futureValue: futureValue, dueDate: dueDate, liquidityIndexAtRepayment: 0});
++        DebtPosition memory debtPosition = DebtPosition({
++            borrower: borrower, futureValue: futureValue, dueDate: dueDate, liquidityIndexAtRepayment: 0
++        });
+ 
+         uint256 debtPositionId = state.data.nextDebtPositionId++;
+         state.data.debtPositions[debtPositionId] = debtPosition;
+@@ -75,10 +76,7 @@ library AccountingLibrary {
+         emit Events.CreateDebtPosition(debtPositionId, borrower, lender, futureValue, dueDate);
+ 
+         creditPosition = CreditPosition({
+-            lender: lender,
+-            credit: debtPosition.futureValue,
+-            debtPositionId: debtPositionId,
+-            forSale: true
++            lender: lender, credit: debtPosition.futureValue, debtPositionId: debtPositionId, forSale: true
+         });
+ 
+         uint256 creditPositionId = state.data.nextCreditPositionId++;
+@@ -246,14 +244,16 @@ library AccountingLibrary {
+             // no credit fractionalization
+ 
+             creditAmountIn = maxCredit;
+-            fees = Math.mulDivUp(cashAmountOut, swapFeePercent, PERCENT);
++            fees = Math.mulDivUp(cashAmountOut, swapFeePercent, PERCENT - swapFeePercent);
+         } else if (cashAmountOut < maxCashAmountOutFragmentation) {
+             // credit fractionalization
+ 
+             creditAmountIn = Math.mulDivUp(
+                 cashAmountOut + state.feeConfig.fragmentationFee, PERCENT + ratePerTenor, PERCENT - swapFeePercent
+             );
+-            fees = Math.mulDivUp(cashAmountOut, swapFeePercent, PERCENT) + state.feeConfig.fragmentationFee;
++            fees = Math.mulDivUp(
++                cashAmountOut + state.feeConfig.fragmentationFee, swapFeePercent, PERCENT - swapFeePercent
++            ) + state.feeConfig.fragmentationFee;
+         } else {
+             // for maxCashAmountOutFragmentation < amountOut < maxCashAmountOut we are in an inconsistent situation
+             //   where charging the swap fee would require to sell a credit that exceeds the max possible credit
+diff --git a/src/libraries/Errors.sol b/src/libraries/Errors.sol
+index f7a849f..3b5e124 100644
+--- a/src/libraries/Errors.sol
++++ b/src/libraries/Errors.sol
+@@ -44,7 +44,9 @@ library Errors {
+ 
+     error BORROWER_IS_NOT_LENDER(address borrower, address lender);
+     error COMPENSATOR_IS_NOT_BORROWER(address compensator, address borrower);
++    error REPAYER_IS_NOT_BORROWER(address repayer, address borrower);
+     error LIQUIDATOR_IS_NOT_LENDER(address liquidator, address lender);
++    error COLLATERAL_RATIO_DECREASED(address account, uint256 beforeCR, uint256 afterCR);
+ 
+     error NOT_ENOUGH_BORROW_ATOKEN_BALANCE(address account, uint256 balance, uint256 required);
+     error NOT_ENOUGH_BORROW_ATOKEN_LIQUIDITY(uint256 liquidity, uint256 required);
+diff --git a/src/libraries/actions/BuyCreditMarket.sol b/src/libraries/actions/BuyCreditMarket.sol
+index 811452b..4986268 100644
+--- a/src/libraries/actions/BuyCreditMarket.sol
++++ b/src/libraries/actions/BuyCreditMarket.sol
+@@ -141,14 +141,15 @@ library BuyCreditMarket {
+             tenor = debtPosition.dueDate - block.timestamp;
+         }
+ 
+-        uint256 ratePerTenor = state.data.users[borrower].borrowOffer.getRatePerTenor(
+-            VariablePoolBorrowRateParams({
+-                variablePoolBorrowRate: state.oracle.variablePoolBorrowRate,
+-                variablePoolBorrowRateUpdatedAt: state.oracle.variablePoolBorrowRateUpdatedAt,
+-                variablePoolBorrowRateStaleRateInterval: state.oracle.variablePoolBorrowRateStaleRateInterval
+-            }),
+-            tenor
+-        );
++        uint256 ratePerTenor = state.data.users[borrower].borrowOffer
++            .getRatePerTenor(
++                VariablePoolBorrowRateParams({
++                    variablePoolBorrowRate: state.oracle.variablePoolBorrowRate,
++                    variablePoolBorrowRateUpdatedAt: state.oracle.variablePoolBorrowRateUpdatedAt,
++                    variablePoolBorrowRateStaleRateInterval: state.oracle.variablePoolBorrowRateStaleRateInterval
++                }),
++                tenor
++            );
+ 
+         uint256 creditAmountOut;
+         uint256 fees;
+@@ -179,20 +180,16 @@ library BuyCreditMarket {
+         if (params.creditPositionId == RESERVED_ID) {
+             // slither-disable-next-line unused-return
+             state.createDebtAndCreditPositions({
+-                lender: msg.sender,
+-                borrower: borrower,
+-                futureValue: creditAmountOut,
+-                dueDate: block.timestamp + tenor
++                lender: msg.sender, borrower: borrower, futureValue: creditAmountOut, dueDate: block.timestamp + tenor
+             });
+         } else {
+             state.createCreditPosition({
+-                exitCreditPositionId: params.creditPositionId,
+-                lender: msg.sender,
+-                credit: creditAmountOut
++                exitCreditPositionId: params.creditPositionId, lender: msg.sender, credit: creditAmountOut
+             });
+         }
+ 
+         state.data.borrowAToken.transferFrom(msg.sender, borrower, cashAmountIn - fees);
+         state.data.borrowAToken.transferFrom(msg.sender, state.feeConfig.feeRecipient, fees);
++        cashAmountIn = cashAmountIn - fees;
+     }
+ }
+diff --git a/src/libraries/actions/Compensate.sol b/src/libraries/actions/Compensate.sol
+index 207c43b..6daeb19 100644
+--- a/src/libraries/actions/Compensate.sol
++++ b/src/libraries/actions/Compensate.sol
+@@ -114,6 +114,7 @@ library Compensate {
+             state.getDebtPositionByCreditPositionId(params.creditPositionWithDebtToRepayId);
+ 
+         uint256 amountToCompensate = Math.min(params.amount, creditPositionWithDebtToRepay.credit);
++        uint256 initialCredit = creditPositionWithDebtToRepay.credit;
+ 
+         CreditPosition memory creditPositionToCompensate;
+         if (params.creditPositionToCompensateId == RESERVED_ID) {
+@@ -125,6 +126,7 @@ library Compensate {
+             });
+         } else {
+             creditPositionToCompensate = state.getCreditPosition(params.creditPositionToCompensateId);
++            initialCredit = creditPositionToCompensate.credit;
+             amountToCompensate = Math.min(amountToCompensate, creditPositionToCompensate.credit);
+         }
+ 
+@@ -133,7 +135,7 @@ library Compensate {
+             creditPositionWithDebtToRepay.debtPositionId, params.creditPositionWithDebtToRepayId, amountToCompensate
+         );
+ 
+-        uint256 exiterCreditRemaining = creditPositionToCompensate.credit - amountToCompensate;
++        uint256 exiterCreditRemaining = initialCredit - amountToCompensate;
+ 
+         // credit emission
+         state.createCreditPosition({
+@@ -149,9 +151,8 @@ library Compensate {
+                 state.debtTokenAmountToCollateralTokenAmount(state.feeConfig.fragmentationFee),
+                 state.data.collateralToken.balanceOf(msg.sender)
+             );
+-            state.data.collateralToken.transferFrom(
+-                msg.sender, state.feeConfig.feeRecipient, fragmentationFeeInCollateral
+-            );
++            state.data.collateralToken
++                .transferFrom(msg.sender, state.feeConfig.feeRecipient, fragmentationFeeInCollateral);
+         }
+     }
+ }
+diff --git a/src/libraries/actions/Liquidate.sol b/src/libraries/actions/Liquidate.sol
+index 59b8de1..e107057 100644
+--- a/src/libraries/actions/Liquidate.sol
++++ b/src/libraries/actions/Liquidate.sol
+@@ -95,7 +95,7 @@ library Liquidate {
+         if (assignedCollateral > debtInCollateralToken) {
+             uint256 liquidatorReward = Math.min(
+                 assignedCollateral - debtInCollateralToken,
+-                Math.mulDivUp(debtPosition.futureValue, state.feeConfig.liquidationRewardPercent, PERCENT)
++                Math.mulDivUp(debtInCollateralToken, state.feeConfig.liquidationRewardPercent, PERCENT)
+             );
+             liquidatorProfitCollateralToken = debtInCollateralToken + liquidatorReward;
+ 
+@@ -105,7 +105,7 @@ library Liquidate {
+             // cap the collateral remainder to the liquidation collateral ratio
+             //   otherwise, the split for non-underwater overdue loans could be too much
+             uint256 collateralRemainderCap =
+-                Math.mulDivDown(debtInCollateralToken, state.riskConfig.crLiquidation, PERCENT);
++                Math.mulDivDown(debtInCollateralToken, state.riskConfig.crLiquidation - PERCENT, PERCENT);
+ 
+             collateralRemainder = Math.min(collateralRemainder, collateralRemainderCap);
+ 
+@@ -117,9 +117,8 @@ library Liquidate {
+ 
+         state.data.borrowAToken.transferFrom(msg.sender, address(this), debtPosition.futureValue);
+         state.data.collateralToken.transferFrom(debtPosition.borrower, msg.sender, liquidatorProfitCollateralToken);
+-        state.data.collateralToken.transferFrom(
+-            debtPosition.borrower, state.feeConfig.feeRecipient, protocolProfitCollateralToken
+-        );
++        state.data.collateralToken
++            .transferFrom(debtPosition.borrower, state.feeConfig.feeRecipient, protocolProfitCollateralToken);
+ 
+         debtPosition.liquidityIndexAtRepayment = state.data.borrowAToken.liquidityIndex();
+         state.repayDebt(params.debtPositionId, debtPosition.futureValue);
+diff --git a/src/libraries/actions/LiquidateWithReplacement.sol b/src/libraries/actions/LiquidateWithReplacement.sol
+index a3f17b8..880c42d 100644
+--- a/src/libraries/actions/LiquidateWithReplacement.sol
++++ b/src/libraries/actions/LiquidateWithReplacement.sol
+@@ -1,10 +1,7 @@
+ // SPDX-License-Identifier: MIT
+ pragma solidity 0.8.23;
+ 
+-import {Math} from "@src/libraries/Math.sol";
+-
+-import {PERCENT} from "@src/libraries/Math.sol";
+-
++import {AccountingLibrary} from "@src/libraries/AccountingLibrary.sol";
+ import {CreditPosition, DebtPosition, LoanLibrary, LoanStatus} from "@src/libraries/LoanLibrary.sol";
+ import {BorrowOffer, OfferLibrary} from "@src/libraries/OfferLibrary.sol";
+ import {VariablePoolBorrowRateParams} from "@src/libraries/YieldCurveLibrary.sol";
+@@ -40,6 +37,7 @@ library LiquidateWithReplacement {
+     using LoanLibrary for State;
+     using Liquidate for State;
+     using LoanLibrary for DebtPosition;
++    using AccountingLibrary for State;
+ 
+     /// @notice Validates the input parameters for liquidating a debt position with a replacement borrower
+     /// @param state The state
+@@ -54,8 +52,7 @@ library LiquidateWithReplacement {
+         // validate liquidate
+         state.validateLiquidate(
+             LiquidateParams({
+-                debtPositionId: params.debtPositionId,
+-                minimumCollateralProfit: params.minimumCollateralProfit
++                debtPositionId: params.debtPositionId, minimumCollateralProfit: params.minimumCollateralProfit
+             })
+         );
+ 
+@@ -104,8 +101,7 @@ library LiquidateWithReplacement {
+         Liquidate.validateMinimumCollateralProfit(
+             state,
+             LiquidateParams({
+-                debtPositionId: params.debtPositionId,
+-                minimumCollateralProfit: params.minimumCollateralProfit
++                debtPositionId: params.debtPositionId, minimumCollateralProfit: params.minimumCollateralProfit
+             }),
+             liquidatorProfitCollateralToken
+         );
+@@ -130,8 +126,7 @@ library LiquidateWithReplacement {
+ 
+         liquidatorProfitCollateralToken = state.executeLiquidate(
+             LiquidateParams({
+-                debtPositionId: params.debtPositionId,
+-                minimumCollateralProfit: params.minimumCollateralProfit
++                debtPositionId: params.debtPositionId, minimumCollateralProfit: params.minimumCollateralProfit
+             })
+         );
+ 
+@@ -143,7 +138,15 @@ library LiquidateWithReplacement {
+             }),
+             tenor
+         );
+-        issuanceValue = Math.mulDivDown(debtPositionCopy.futureValue, PERCENT, PERCENT + ratePerTenor);
++        uint256 cashAmountIn;
++        uint256 swapFees;
++        (cashAmountIn, swapFees) = state.getCashAmountIn({
++            creditAmountOut: debtPositionCopy.futureValue,
++            maxCredit: debtPositionCopy.futureValue,
++            ratePerTenor: ratePerTenor,
++            tenor: tenor
++        });
++        issuanceValue = cashAmountIn - swapFees;
+         liquidatorProfitBorrowToken = debtPositionCopy.futureValue - issuanceValue;
+ 
+         debtPosition.borrower = params.borrower;
+diff --git a/src/libraries/actions/Repay.sol b/src/libraries/actions/Repay.sol
+index 8f6c7db..452f823 100644
+--- a/src/libraries/actions/Repay.sol
++++ b/src/libraries/actions/Repay.sol
+@@ -36,8 +36,12 @@ library Repay {
+             revert Errors.LOAN_ALREADY_REPAID(params.debtPositionId);
+         }
+ 
++        DebtPosition storage debtPosition = state.getDebtPosition(params.debtPositionId);
++
+         // validate msg.sender
+-        // N/A
++        if (msg.sender != debtPosition.borrower) {
++            revert Errors.REPAYER_IS_NOT_BORROWER(msg.sender, debtPosition.borrower);
++        }
+     }
+ 
+     /// @notice Executes the repayment of a debt position

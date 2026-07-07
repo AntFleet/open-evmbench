@@ -1,0 +1,325 @@
+diff --git a/contracts/StablecoinDEX.sol b/contracts/StablecoinDEX.sol
+index 4c59976..d088cba 100644
+--- a/contracts/StablecoinDEX.sol
++++ b/contracts/StablecoinDEX.sol
+@@ -43,6 +43,12 @@ contract StablecoinDEX {
+     /// @notice Maximum price deviation from 1:1 (for stablecoin pairs)
+     uint128 public constant MAX_PRICE_DEVIATION = 1e16; // 1% from parity
+ 
++    /// @notice Parity price for stablecoin pairs, using 18 decimals
++    uint128 public constant PARITY_PRICE = 1e18;
++
++    uint256 private constant _NOT_ENTERED = 1;
++    uint256 private constant _ENTERED = 2;
++
+     // =============================================================
+     //                            STRUCTS
+     // =============================================================
+@@ -85,23 +91,18 @@ contract StablecoinDEX {
+     /// @notice Total deposits per token for accounting
+     mapping(address => uint256) public totalDeposits;
+ 
++    /// @notice Reentrancy guard status
++    uint256 private _reentrancyStatus;
++
+     // =============================================================
+     //                            EVENTS
+     // =============================================================
+ 
+     /// @notice Emitted when TIP-20 tokens are deposited
+-    event Deposited(
+-        address indexed user,
+-        address indexed token,
+-        uint128 amount
+-    );
++    event Deposited(address indexed user, address indexed token, uint128 amount);
+ 
+     /// @notice Emitted when TIP-20 tokens are withdrawn
+-    event Withdrawn(
+-        address indexed user,
+-        address indexed token,
+-        uint128 amount
+-    );
++    event Withdrawn(address indexed user, address indexed token, uint128 amount);
+ 
+     /// @notice Emitted when a new order is placed
+     event OrderPlaced(
+@@ -114,19 +115,10 @@ contract StablecoinDEX {
+     );
+ 
+     /// @notice Emitted when an order is cancelled
+-    event OrderCancelled(
+-        uint128 indexed orderId,
+-        address indexed maker,
+-        uint128 refundAmount
+-    );
++    event OrderCancelled(uint128 indexed orderId, address indexed maker, uint128 refundAmount);
+ 
+     /// @notice Emitted when an order is filled (partially or fully)
+-    event OrderFilled(
+-        uint128 indexed orderId,
+-        address indexed taker,
+-        uint128 fillAmount,
+-        uint128 quoteAmount
+-    );
++    event OrderFilled(uint128 indexed orderId, address indexed taker, uint128 fillAmount, uint128 quoteAmount);
+ 
+     // =============================================================
+     //                            ERRORS
+@@ -140,6 +132,15 @@ contract StablecoinDEX {
+     error ZeroAddress();
+     error OrderTooSmall();
+     error TransferFailed();
++    error InvalidTokenPair();
++    error ReentrantCall();
++
++    modifier nonReentrant() {
++        if (_reentrancyStatus == _ENTERED) revert ReentrantCall();
++        _reentrancyStatus = _ENTERED;
++        _;
++        _reentrancyStatus = _NOT_ENTERED;
++    }
+ 
+     // =============================================================
+     //                          CONSTRUCTOR
+@@ -147,6 +148,7 @@ contract StablecoinDEX {
+ 
+     constructor() {
+         nextOrderId = 1; // Start at 1, 0 is reserved for null
++        _reentrancyStatus = _NOT_ENTERED;
+     }
+ 
+     // =============================================================
+@@ -160,15 +162,23 @@ contract StablecoinDEX {
+      * @param token TIP-20 token address to deposit
+      * @param amount Amount to deposit
+      */
+-    function deposit(address token, uint128 amount) external {
++    function deposit(address token, uint128 amount) external nonReentrant {
+         if (token == address(0)) revert ZeroAddress();
+         if (amount == 0) revert InvalidAmount();
+ 
++        uint256 balanceBefore = IERC20(token).balanceOf(address(this));
+         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+-        balances[msg.sender][token] += amount;
+-        totalDeposits[token] += amount;
++        uint256 received = IERC20(token).balanceOf(address(this)) - balanceBefore;
++        if (received == 0 || received > type(uint128).max) {
++            revert InvalidAmount();
++        }
++
++        // forge-lint: disable-next-line(unsafe-typecast)
++        uint128 creditedAmount = uint128(received);
++        balances[msg.sender][token] += creditedAmount;
++        totalDeposits[token] += creditedAmount;
+ 
+-        emit Deposited(msg.sender, token, amount);
++        emit Deposited(msg.sender, token, creditedAmount);
+     }
+ 
+     /**
+@@ -176,15 +186,8 @@ contract StablecoinDEX {
+      * @param token TIP-20 token address to withdraw
+      * @param amount Amount to withdraw
+      */
+-    function withdraw(address token, uint128 amount) external {
+-        if (token == address(0)) revert ZeroAddress();
+-        if (amount == 0) revert InvalidAmount();
+-        if (balances[msg.sender][token] < amount) revert InsufficientBalance();
+-
+-        IERC20(token).safeTransfer(msg.sender, amount);
+-        balances[msg.sender][token] -= amount;
+-        totalDeposits[token] -= amount;
+-
++    function withdraw(address token, uint128 amount) external nonReentrant {
++        _processWithdrawal(msg.sender, token, amount);
+         emit Withdrawn(msg.sender, token, amount);
+     }
+ 
+@@ -202,18 +205,22 @@ contract StablecoinDEX {
+      * @param amount Amount of base tokens to sell
+      * @return orderId The ID of the created order
+      */
+-    function placeOrder(
+-        address baseToken,
+-        address quoteToken,
+-        uint128 price,
+-        uint128 amount
+-    ) external returns (uint128 orderId) {
+-        if (baseToken == address(0) || quoteToken == address(0))
++    function placeOrder(address baseToken, address quoteToken, uint128 price, uint128 amount)
++        external
++        nonReentrant
++        returns (uint128 orderId)
++    {
++        if (baseToken == address(0) || quoteToken == address(0)) {
+             revert ZeroAddress();
++        }
++        if (baseToken == quoteToken) revert InvalidTokenPair();
+         if (amount < MIN_ORDER_SIZE) revert OrderTooSmall();
+-        if (price == 0) revert InvalidPrice();
+-        if (balances[msg.sender][baseToken] < amount)
++        if (price < PARITY_PRICE - MAX_PRICE_DEVIATION || price > PARITY_PRICE + MAX_PRICE_DEVIATION) {
++            revert InvalidPrice();
++        }
++        if (balances[msg.sender][baseToken] < amount) {
+             revert InsufficientBalance();
++        }
+ 
+         // Lock tokens
+         balances[msg.sender][baseToken] -= amount;
+@@ -239,14 +246,7 @@ contract StablecoinDEX {
+         }
+         orderHeads[baseToken][quoteToken] = orderId;
+ 
+-        emit OrderPlaced(
+-            orderId,
+-            msg.sender,
+-            baseToken,
+-            quoteToken,
+-            price,
+-            amount
+-        );
++        emit OrderPlaced(orderId, msg.sender, baseToken, quoteToken, price, amount);
+     }
+ 
+     /**
+@@ -255,7 +255,7 @@ contract StablecoinDEX {
+      *      Important for market makers adjusting positions during volatility.
+      * @param orderId The ID of the order to cancel
+      */
+-    function cancel(uint128 orderId) external {
++    function cancel(uint128 orderId) external nonReentrant {
+         Order storage order = orders[orderId];
+         if (order.maker == address(0)) revert OrderDoesNotExist();
+ 
+@@ -304,15 +304,20 @@ contract StablecoinDEX {
+      * @param orderId The ID of the order to fill
+      * @param amount Amount of base tokens to buy from the order
+      */
+-    function fillOrder(uint128 orderId, uint128 amount) external {
++    function fillOrder(uint128 orderId, uint128 amount) external nonReentrant {
+         Order storage order = orders[orderId];
+         if (order.maker == address(0)) revert OrderDoesNotExist();
+         if (amount == 0) revert InvalidAmount();
+         if (amount > order.remaining) revert InvalidAmount();
+ 
+-        // Calculate quote amount (price is in 18 decimals)
+-        uint256 quoteAmount = (uint256(amount) * uint256(order.price)) / 1e18;
+-        if (quoteAmount == 0) revert InvalidAmount();
++        // Calculate quote amount (price is in 18 decimals), rounding in
++        // the maker's favor so dust fills cannot underpay the quoted price.
++        uint256 quoteAmount256 = ((uint256(amount) * uint256(order.price)) + PARITY_PRICE - 1) / PARITY_PRICE;
++        if (quoteAmount256 == 0 || quoteAmount256 > type(uint128).max) {
++            revert InvalidAmount();
++        }
++        // forge-lint: disable-next-line(unsafe-typecast)
++        uint128 quoteAmount = uint128(quoteAmount256);
+ 
+         // Check taker has enough quote tokens
+         if (balances[msg.sender][order.quoteToken] < quoteAmount) {
+@@ -320,13 +325,13 @@ contract StablecoinDEX {
+         }
+ 
+         // Execute swap
+-        balances[msg.sender][order.quoteToken] -= uint128(quoteAmount);
++        balances[msg.sender][order.quoteToken] -= quoteAmount;
+         balances[msg.sender][order.baseToken] += amount;
+-        balances[order.maker][order.quoteToken] += uint128(quoteAmount);
++        balances[order.maker][order.quoteToken] += quoteAmount;
+ 
+         order.remaining -= amount;
+ 
+-        emit OrderFilled(orderId, msg.sender, amount, uint128(quoteAmount));
++        emit OrderFilled(orderId, msg.sender, amount, quoteAmount);
+ 
+         // Remove order if fully filled
+         if (order.remaining == 0) {
+@@ -337,7 +342,7 @@ contract StablecoinDEX {
+     /**
+      * @notice Removes a fully filled order from the linked list
+      */
+-    function _removeFilledOrder(uint128 orderId, Order storage order) internal {
++    function _removeFilledOrder(uint128, Order storage order) internal {
+         address baseToken = order.baseToken;
+         address quoteToken = order.quoteToken;
+ 
+@@ -364,20 +369,18 @@ contract StablecoinDEX {
+ 
+     /**
+      * @notice Internal function to process withdrawals
+-     * @dev Uses unchecked arithmetic for gas optimization
++     * @dev Validates and updates accounting before transferring tokens out.
+      * @param user User address
+      * @param token Token address
+      * @param amount Amount to withdraw
+      */
+-    function _processWithdrawal(
+-        address user,
+-        address token,
+-        uint128 amount
+-    ) internal {
+-        unchecked {
+-            balances[user][token] -= amount;
+-            totalDeposits[token] -= amount;
+-        }
++    function _processWithdrawal(address user, address token, uint128 amount) internal {
++        if (token == address(0)) revert ZeroAddress();
++        if (amount == 0) revert InvalidAmount();
++        if (balances[user][token] < amount) revert InsufficientBalance();
++
++        balances[user][token] -= amount;
++        totalDeposits[token] -= amount;
+         IERC20(token).safeTransfer(user, amount);
+     }
+ 
+@@ -387,7 +390,7 @@ contract StablecoinDEX {
+      * @param token Token to withdraw
+      * @param amount Amount to withdraw
+      */
+-    function emergencyWithdraw(address token, uint128 amount) external {
++    function emergencyWithdraw(address token, uint128 amount) external nonReentrant {
+         _processWithdrawal(msg.sender, token, amount);
+         emit Withdrawn(msg.sender, token, amount);
+     }
+@@ -402,10 +405,7 @@ contract StablecoinDEX {
+      * @param token Token address
+      * @return balance Available balance
+      */
+-    function getBalance(
+-        address user,
+-        address token
+-    ) external view returns (uint128) {
++    function getBalance(address user, address token) external view returns (uint128) {
+         return balances[user][token];
+     }
+ 
+@@ -424,10 +424,7 @@ contract StablecoinDEX {
+      * @param quoteToken Quote token address
+      * @return headId The head order ID (0 if no orders)
+      */
+-    function getOrderHead(
+-        address baseToken,
+-        address quoteToken
+-    ) external view returns (uint128) {
++    function getOrderHead(address baseToken, address quoteToken) external view returns (uint128) {
+         return orderHeads[baseToken][quoteToken];
+     }
+ 
+@@ -448,11 +445,11 @@ contract StablecoinDEX {
+      * @param maxOrders Maximum orders to return
+      * @return orderIds Array of order IDs
+      */
+-    function getOrders(
+-        address baseToken,
+-        address quoteToken,
+-        uint128 maxOrders
+-    ) external view returns (uint128[] memory orderIds) {
++    function getOrders(address baseToken, address quoteToken, uint128 maxOrders)
++        external
++        view
++        returns (uint128[] memory orderIds)
++    {
+         uint128 head = orderHeads[baseToken][quoteToken];
+         if (head == 0) return new uint128[](0);
+ 

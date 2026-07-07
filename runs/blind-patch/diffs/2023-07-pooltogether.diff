@@ -1,0 +1,147 @@
+diff --git a/vault/src/Vault.sol b/vault/src/Vault.sol
+index e92ecaf..dd5566a 100644
+--- a/vault/src/Vault.sol
++++ b/vault/src/Vault.sol
+@@ -97,6 +97,11 @@ error LPZeroAddress();
+ /// @param maxYieldFeePercentage The max yield fee percentage in integer format (this value is equal to 1 in decimal format)
+ error YieldFeePercentageGTPrecision(uint256 yieldFeePercentage, uint256 maxYieldFeePercentage);
+ 
++/// @notice Emitted when a share amount exceeds the TWAB controller balance limit.
++/// @param shares The requested share amount
++/// @param maxShares The maximum share amount supported by the TWAB controller
++error SharesExceedTwabLimit(uint256 shares, uint256 maxShares);
++
+ /**
+  * @title  PoolTogether V5 Vault
+  * @author PoolTogether Inc Team, Generation Software Team
+@@ -372,16 +377,18 @@ contract Vault is ERC4626, ERC20Permit, ILiquidationSource, Ownable {
+    * @inheritdoc ERC4626
+    * @dev We use type(uint96).max cause this is the type used to store balances in TwabController.
+    */
+-  function maxDeposit(address) public view virtual override returns (uint256) {
+-    return _isVaultCollateralized() ? type(uint96).max : 0;
++  function maxDeposit(address _receiver) public view virtual override returns (uint256) {
++    return _isVaultCollateralized()
++      ? _convertToAssets(_maxMint(_receiver), Math.Rounding.Down)
++      : 0;
+   }
+ 
+   /**
+    * @inheritdoc ERC4626
+    * @dev We use type(uint96).max cause this is the type used to store balances in TwabController.
+    */
+-  function maxMint(address) public view virtual override returns (uint256) {
+-    return _isVaultCollateralized() ? type(uint96).max : 0;
++  function maxMint(address _receiver) public view virtual override returns (uint256) {
++    return _isVaultCollateralized() ? _maxMint(_receiver) : 0;
+   }
+ 
+   /**
+@@ -577,7 +584,7 @@ contract Vault is ERC4626, ERC20Permit, ILiquidationSource, Ownable {
+ 
+     uint256 _vaultAssets = IERC20(asset()).balanceOf(address(this));
+ 
+-    if (_vaultAssets != 0 && _amountOut >= _vaultAssets) {
++    if (_vaultAssets != 0) {
+       _yieldVault.deposit(_vaultAssets, address(this));
+     }
+ 
+@@ -850,9 +857,41 @@ contract Vault is ERC4626, ERC20Permit, ILiquidationSource, Ownable {
+    * @param _shares Amount of shares to increase yield fee balance by
+    */
+   function _increaseYieldFeeBalance(uint256 _shares) internal {
++    uint256 _newTotalShares = _totalShares() + _shares;
++
++    if (_newTotalShares > type(uint96).max) {
++      revert SharesExceedTwabLimit(_newTotalShares, type(uint96).max);
++    }
+     _yieldFeeTotalSupply += _shares;
+   }
+ 
++  /**
++   * @notice Maximum shares that can be minted to `_receiver` without exceeding TWAB limits.
++   * @param _receiver The receiver of newly minted shares
++   * @return uint256 Maximum mintable shares
++   */
++  function _maxMint(address _receiver) internal view returns (uint256) {
++    uint256 _totalShareSupply = _totalShares();
++    if (_totalShareSupply >= type(uint96).max) return 0;
++
++    uint256 _remainingSupply = type(uint96).max - _totalShareSupply;
++    uint256 _remainingReceiverBalance = type(uint96).max - balanceOf(_receiver);
++
++    return Math.min(_remainingSupply, _remainingReceiverBalance);
++  }
++
++  /**
++   * @notice Cast a share amount to the TWAB controller balance type.
++   * @param _shares The share amount to cast
++   * @return uint96 The safely downcast share amount
++   */
++  function _safeCastShares(uint256 _shares) internal pure returns (uint96) {
++    if (_shares > type(uint96).max) revert SharesExceedTwabLimit(_shares, type(uint96).max);
++
++    // forge-lint: disable-next-line(unsafe-typecast)
++    return uint96(_shares);
++  }
++
+   /* ============ Conversion Functions ============ */
+ 
+   /**
+@@ -1120,7 +1159,18 @@ contract Vault is ERC4626, ERC20Permit, ILiquidationSource, Ownable {
+    * @dev Updates the exchange rate.
+    */
+   function _mint(address _receiver, uint256 _shares) internal virtual override {
+-    _twabController.mint(_receiver, uint96(_shares));
++    require(_receiver != address(0), "ERC20: mint to the zero address");
++    uint256 _newTotalShares = _totalShares() + _shares;
++    uint256 _newReceiverBalance = balanceOf(_receiver) + _shares;
++
++    if (_newTotalShares > type(uint96).max) {
++      revert SharesExceedTwabLimit(_newTotalShares, type(uint96).max);
++    }
++    if (_newReceiverBalance > type(uint96).max) {
++      revert SharesExceedTwabLimit(_newReceiverBalance, type(uint96).max);
++    }
++
++    _twabController.mint(_receiver, _safeCastShares(_shares));
+     _updateExchangeRate();
+ 
+     emit Transfer(address(0), _receiver, _shares);
+@@ -1136,7 +1186,9 @@ contract Vault is ERC4626, ERC20Permit, ILiquidationSource, Ownable {
+    * @dev Updates the exchange rate.
+    */
+   function _burn(address _owner, uint256 _shares) internal virtual override {
+-    _twabController.burn(_owner, uint96(_shares));
++    require(_owner != address(0), "ERC20: burn from the zero address");
++
++    _twabController.burn(_owner, _safeCastShares(_shares));
+     _updateExchangeRate();
+ 
+     emit Transfer(_owner, address(0), _shares);
+@@ -1152,7 +1204,24 @@ contract Vault is ERC4626, ERC20Permit, ILiquidationSource, Ownable {
+    * @dev `_from` must have a balance of at least `_shares`.
+    */
+   function _transfer(address _from, address _to, uint256 _shares) internal virtual override {
+-    _twabController.transfer(_from, _to, uint96(_shares));
++    require(_from != address(0), "ERC20: transfer from the zero address");
++    require(_to != address(0), "ERC20: transfer to the zero address");
++    uint256 _fromBalance = balanceOf(_from);
++
++    if (_from == _to) {
++      require(_fromBalance >= _shares, "ERC20: transfer amount exceeds balance");
++      _safeCastShares(_shares);
++
++      emit Transfer(_from, _to, _shares);
++      return;
++    }
++
++    uint256 _newToBalance = balanceOf(_to) + _shares;
++    if (_newToBalance > type(uint96).max) {
++      revert SharesExceedTwabLimit(_newToBalance, type(uint96).max);
++    }
++
++    _twabController.transfer(_from, _to, _safeCastShares(_shares));
+ 
+     emit Transfer(_from, _to, _shares);
+   }
