@@ -4,6 +4,8 @@
 name: patch-grade
 
 on:
+  push:
+    branches: ["ci/patch-grade-blind"]
   workflow_dispatch:
     inputs:
       diffs_dir:
@@ -40,8 +42,9 @@ jobs:
 
       - name: Grade diffs
         run: |
-          python scripts/grade_patch_diffs.py \
-            --diffs "${{ inputs.diffs_dir }}" --out runs/blind-patch
+          DIFFS="${{ inputs.diffs_dir }}"
+          DIFFS="${DIFFS:-runs/blind-patch/diffs}"
+          python scripts/grade_patch_diffs.py --diffs "$DIFFS" --out runs/blind-patch
 
       - name: Upload results
         if: always()
