@@ -1,0 +1,72 @@
+# Prove the Phase 2 Patch board is not gameable to 100%.
+# Runs synthesized degenerate patches (empty / noop / brick) through the real
+# Docker grader on native amd64 and asserts every one scores 0. Also grades the
+# upstream gold patch as a positive control. Uploads the evidence artifact.
+name: patch-gameability
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "subset = pooltogether (strict) + virtuals (wide guard); all = 22 audits (slow)"
+        required: true
+        type: choice
+        options:
+          - subset
+          - all
+        default: subset
+
+permissions:
+  contents: read
+
+jobs:
+  gameability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Build evmbench/patch-base
+        run: |
+          docker build -f docker/evmbench-patch-base.Dockerfile \
+            -t evmbench/patch-base:latest docker/
+
+      - name: Fetch pinned upstream dataset
+        run: python -c "from openevmbench.upstream import ensure_upstream; ensure_upstream()"
+
+      - name: Guard classification (always)
+        run: python scripts/patch_gameability_probe.py --classify-only --out runs/gameability
+
+      - name: Run gameability probe (${{ inputs.scope }})
+        run: |
+          if [ "${{ inputs.scope }}" = "all" ]; then
+            python scripts/patch_gameability_probe.py --all --gold --out runs/gameability
+          else
+            python scripts/patch_gameability_probe.py \
+              --audits 2023-07-pooltogether 2025-04-virtuals --gold --out runs/gameability
+          fi
+
+      - name: Upload gameability evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase2-gameability-report
+          path: runs/gameability/
+          retention-days: 30
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Phase 2 gameability probe" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f runs/gameability/SUMMARY.md ]; then
+            cat runs/gameability/SUMMARY.md >> "$GITHUB_STEP_SUMMARY"
+          fi
