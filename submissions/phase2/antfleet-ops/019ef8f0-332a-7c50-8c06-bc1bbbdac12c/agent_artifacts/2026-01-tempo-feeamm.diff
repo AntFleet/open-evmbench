@@ -1,0 +1,22 @@
+diff --git a/contracts/FeeAMM.sol b/contracts/FeeAMM.sol
+index 7f0634a..d1dd46c 100644
+--- a/contracts/FeeAMM.sol
++++ b/contracts/FeeAMM.sol
+@@ -249,14 +249,14 @@ contract FeeAMM {
+         _requireU128(amountUserToken);
+         _requireU128(amountValidatorToken);
+ 
+-        IERC20(userToken).transfer(to, amountUserToken);
+-        IERC20(validatorToken).transfer(to, amountValidatorToken);
+-
+         liquidityBalances[poolId][msg.sender] -= liquidity;
+         totalSupply[poolId] -= liquidity;
+         pool.reserveUserToken -= uint128(amountUserToken);
+         pool.reserveValidatorToken -= uint128(amountValidatorToken);
+ 
++        IERC20(userToken).transfer(to, amountUserToken);
++        IERC20(validatorToken).transfer(to, amountValidatorToken);
++
+         emit Burn(
+             msg.sender,
+             userToken,

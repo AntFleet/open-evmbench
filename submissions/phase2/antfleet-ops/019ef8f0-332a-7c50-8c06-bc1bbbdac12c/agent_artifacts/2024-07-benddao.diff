@@ -1,0 +1,141 @@
+diff --git a/src/libraries/logic/IsolateLogic.sol b/src/libraries/logic/IsolateLogic.sol
+index be67080..12210de 100644
+--- a/src/libraries/logic/IsolateLogic.sol
++++ b/src/libraries/logic/IsolateLogic.sol
+@@ -419,6 +419,7 @@ library IsolateLogic {
+       );
+ 
+       ValidateLogic.validateIsolateLiquidateLoan(params, debtGroupData, loanData);
++      require(loanData.lastBidder == params.msgSender, Errors.INVALID_CALLER);
+ 
+       vars.auctionEndTimestamp = loanData.bidStartTimestamp + nftAssetData.auctionDuration;
+       require(block.timestamp > vars.auctionEndTimestamp, Errors.ISOLATE_BID_AUCTION_DURATION_NOT_END);
+diff --git a/src/libraries/logic/ValidateLogic.sol b/src/libraries/logic/ValidateLogic.sol
+index 4c287a9..ffdab4a 100644
+--- a/src/libraries/logic/ValidateLogic.sol
++++ b/src/libraries/logic/ValidateLogic.sol
+@@ -497,6 +497,12 @@ library ValidateLogic {
+ 
+     for (uint256 i = 0; i < inputParams.amounts.length; i++) {
+       require(inputParams.amounts[i] > 0, Errors.INVALID_AMOUNT);
++
++      DataTypes.ERC721TokenData storage tokenData = VaultLogic.erc721GetTokenData(
++        nftAssetData,
++        inputParams.nftTokenIds[i]
++      );
++      require(tokenData.owner == inputParams.onBehalf, Errors.ISOLATE_LOAN_OWNER_NOT_MATCH);
+     }
+   }
+ 
+@@ -567,6 +573,14 @@ library ValidateLogic {
+ 
+     require(inputParams.nftTokenIds.length > 0, Errors.INVALID_ID_LIST);
+     validateArrayDuplicateUInt256(inputParams.nftTokenIds);
++
++    for (uint256 i = 0; i < inputParams.nftTokenIds.length; i++) {
++      DataTypes.ERC721TokenData storage tokenData = VaultLogic.erc721GetTokenData(
++        nftAssetData,
++        inputParams.nftTokenIds[i]
++      );
++      require(tokenData.owner == inputParams.msgSender, Errors.ISOLATE_LOAN_OWNER_NOT_MATCH);
++    }
+   }
+ 
+   function validateIsolateRedeemLoan(
+diff --git a/src/libraries/logic/VaultLogic.sol b/src/libraries/logic/VaultLogic.sol
+index 5fc739c..d217c02 100644
+--- a/src/libraries/logic/VaultLogic.sol
++++ b/src/libraries/logic/VaultLogic.sol
+@@ -618,6 +618,7 @@ library VaultLogic {
+ 
+       tokenData.owner = address(0);
+       tokenData.supplyMode = 0;
++      tokenData.lockerAddr = address(0);
+     }
+ 
+     assetData.totalScaledIsolateSupply -= tokenIds.length;
+@@ -636,6 +637,7 @@ library VaultLogic {
+ 
+       tokenData.owner = address(0);
+       tokenData.supplyMode = 0;
++      tokenData.lockerAddr = address(0);
+     }
+ 
+     assetData.totalScaledIsolateSupply -= tokenIds.length;
+diff --git a/src/yield/YieldAccount.sol b/src/yield/YieldAccount.sol
+index edc1949..fb30437 100644
+--- a/src/yield/YieldAccount.sol
++++ b/src/yield/YieldAccount.sol
+@@ -3,6 +3,7 @@ pragma solidity ^0.8.0;
+ 
+ import {IERC20} from '@openzeppelin/contracts/token/ERC20/IERC20.sol';
+ import {IERC721} from '@openzeppelin/contracts/token/ERC721/IERC721.sol';
++import {IERC721Receiver} from '@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol';
+ import {SafeERC20} from '@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol';
+ import {Address} from '@openzeppelin/contracts/utils/Address.sol';
+ import {Initializable} from '@openzeppelin/contracts/proxy/utils/Initializable.sol';
+@@ -12,7 +13,7 @@ import {Errors} from 'src/libraries/helpers/Errors.sol';
+ import {IYieldRegistry} from 'src/interfaces/IYieldRegistry.sol';
+ import {IYieldAccount} from 'src/interfaces/IYieldAccount.sol';
+ 
+-contract YieldAccount is IYieldAccount, Initializable {
++contract YieldAccount is IYieldAccount, IERC721Receiver, Initializable {
+   using SafeERC20 for IERC20;
+   using Address for address;
+ 
+@@ -74,5 +75,9 @@ contract YieldAccount is IYieldAccount, Initializable {
+     target.functionCall(data);
+   }
+ 
++  function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4) {
++    return IERC721Receiver.onERC721Received.selector;
++  }
++
+   receive() external payable {}
+ }
+diff --git a/src/yield/etherfi/YieldEthStakingEtherfi.sol b/src/yield/etherfi/YieldEthStakingEtherfi.sol
+index dcd9d9b..9717033 100644
+--- a/src/yield/etherfi/YieldEthStakingEtherfi.sol
++++ b/src/yield/etherfi/YieldEthStakingEtherfi.sol
+@@ -69,14 +69,16 @@ contract YieldEthStakingEtherfi is YieldStakingBase {
+     IWETH(address(underlyingAsset)).withdraw(amount);
+ 
+     IYieldAccount yieldAccount = IYieldAccount(yieldAccounts[msg.sender]);
++    uint256 yieldBalanceBefore = getAccountYieldBalance(address(yieldAccount));
+ 
+     bytes memory result = yieldAccount.executeWithValue{value: amount}(
+       address(liquidityPool),
+       abi.encodeWithSelector(ILiquidityPool.deposit.selector),
+       amount
+     );
+-    uint256 yieldAmount = abi.decode(result, (uint256));
+-    require(yieldAmount > 0, Errors.YIELD_ETH_DEPOSIT_FAILED);
++    uint256 protocolShares = abi.decode(result, (uint256));
++    uint256 yieldAmount = getAccountYieldBalance(address(yieldAccount)) - yieldBalanceBefore;
++    require(protocolShares > 0 && yieldAmount > 0, Errors.YIELD_ETH_DEPOSIT_FAILED);
+     return yieldAmount;
+   }
+ 
+diff --git a/src/yield/lido/YieldEthStakingLido.sol b/src/yield/lido/YieldEthStakingLido.sol
+index 00dd7d5..04d3ff2 100644
+--- a/src/yield/lido/YieldEthStakingLido.sol
++++ b/src/yield/lido/YieldEthStakingLido.sol
+@@ -67,14 +67,16 @@ contract YieldEthStakingLido is YieldStakingBase {
+     IWETH(address(underlyingAsset)).withdraw(amount);
+ 
+     IYieldAccount yieldAccount = IYieldAccount(yieldAccounts[msg.sender]);
++    uint256 yieldBalanceBefore = getAccountYieldBalance(address(yieldAccount));
+ 
+     bytes memory result = yieldAccount.executeWithValue{value: amount}(
+       address(stETH),
+       abi.encodeWithSelector(IStETH.submit.selector, address(0)),
+       amount
+     );
+-    uint256 yieldAmount = abi.decode(result, (uint256));
+-    require(yieldAmount > 0, Errors.YIELD_ETH_DEPOSIT_FAILED);
++    uint256 protocolShares = abi.decode(result, (uint256));
++    uint256 yieldAmount = getAccountYieldBalance(address(yieldAccount)) - yieldBalanceBefore;
++    require(protocolShares > 0 && yieldAmount > 0, Errors.YIELD_ETH_DEPOSIT_FAILED);
+     return yieldAmount;
+   }
+ 

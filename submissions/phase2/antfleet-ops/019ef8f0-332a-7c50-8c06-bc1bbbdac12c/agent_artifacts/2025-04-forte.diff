@@ -1,0 +1,60 @@
+diff --git a/src/Float128.sol b/src/Float128.sol
+index 7637d83..7ba22ad 100644
+--- a/src/Float128.sol
++++ b/src/Float128.sol
+@@ -693,6 +693,8 @@ library Float128 {
+      * @return r the result of √a
+      */
+     function sqrt(packedFloat a) internal pure returns (packedFloat r) {
++        if (packedFloat.unwrap(a) == 0) return packedFloat.wrap(0);
++
+         uint s;
+         int aExp;
+         uint x;
+@@ -708,9 +710,6 @@ library Float128 {
+                 mstore(add(ptr, 0x44), "float128: squareroot of negative")
+                 revert(ptr, 0x64) // Revert data length is 4 bytes for selector and 3 slots of 0x20 bytes
+             }
+-            if iszero(a) {
+-                stop()
+-            }
+             aL := gt(and(a, MANTISSA_L_FLAG_MASK), 0)
+             aMan := and(a, MANTISSA_MASK)
+             aExp := shr(EXPONENT_BIT, and(a, EXPONENT_MASK))
+@@ -735,11 +734,11 @@ library Float128 {
+             int rExp = aExp - int(MAX_DIGITS_L);
+             bool Lresult = true;
+             unchecked {
++                rExp = (rExp) / 2;
+                 if (rMan > MAX_L_DIGIT_NUMBER) {
+                     rMan /= BASE;
+                     ++rExp;
+                 }
+-                rExp = (rExp) / 2;
+                 if (rExp <= MAXIMUM_EXPONENT - int(DIGIT_DIFF_L_M)) {
+                     rMan /= BASE_TO_THE_DIGIT_DIFF;
+                     rExp += int(DIGIT_DIFF_L_M);
+diff --git a/src/Ln.sol b/src/Ln.sol
+index 4c73bbc..eef249f 100644
+--- a/src/Ln.sol
++++ b/src/Ln.sol
+@@ -15,6 +15,7 @@ library Ln {
+ 
+     // These constants are used in an inline assembly block and must direct number constants
+     uint constant MANTISSA_MASK = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
++    uint constant MANTISSA_SIGN_MASK = 0x1000000000000000000000000000000000000000000000000000000000000;
+     uint constant MANTISSA_L_FLAG_MASK = 0x2000000000000000000000000000000000000000000000000000000000000;
+     uint constant EXPONENT_MASK = 0xfffc000000000000000000000000000000000000000000000000000000000000;
+     uint constant ZERO_OFFSET = 8192;
+@@ -61,6 +62,11 @@ library Ln {
+      * @notice passing a large-mantissa input will have better precision results.
+      */
+     function ln(packedFloat input) public pure returns (packedFloat result) {
++        if (packedFloat.unwrap(input) == 0) revert("ln: input must be positive, zero is invalid");
++        if ((packedFloat.unwrap(input) & MANTISSA_SIGN_MASK) > 0) {
++            revert("ln: input must be positive, negative is invalid");
++        }
++
+         uint mantissa;
+         int exponent;
+         bool inputL;

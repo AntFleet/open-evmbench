@@ -1,0 +1,33 @@
+diff --git a/contracts/TempoStreamChannel.sol b/contracts/TempoStreamChannel.sol
+index 1cab3e6..3f3b97a 100644
+--- a/contracts/TempoStreamChannel.sol
++++ b/contracts/TempoStreamChannel.sol
+@@ -226,6 +226,7 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
+         uint256 deadline
+     ) external nonReentrant returns (bytes32 channelId) {
+         if (payee == address(0)) revert ZeroAddress();
++        if (authorizedSigner == address(0)) revert ZeroAddress();
+         if (deposit == 0) revert InvalidAmount();
+ 
+         channelId = keccak256(
+@@ -314,6 +315,7 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
+         bytes32 digest = _hashTypedDataV4(structHash);
+         address signer = _recoverSigner(digest, signature);
+ 
++        if (signer == address(0)) revert InvalidSigner();
+         if (signer != channel.authorizedSigner) revert InvalidSigner();
+ 
+         uint256 delta = voucher.cumulativeAmount - channel.settled;
+@@ -404,6 +406,7 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
+         bytes32 digest = _hashTypedDataV4(structHash);
+         address signer = _recoverSigner(digest, signature);
+ 
++        if (signer == address(0)) revert InvalidSigner();
+         if (signer != channel.authorizedSigner) revert InvalidSigner();
+ 
+         bytes32 closeHash = keccak256(
+@@ -475,4 +478,3 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
+         return _domainSeparatorV4();
+     }
+ }
+-

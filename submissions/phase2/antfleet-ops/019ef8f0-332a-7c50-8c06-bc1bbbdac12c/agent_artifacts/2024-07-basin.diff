@@ -1,0 +1,26 @@
+diff --git a/src/WellUpgradeable.sol b/src/WellUpgradeable.sol
+index ea60c50..6ae3c71 100644
+--- a/src/WellUpgradeable.sol
++++ b/src/WellUpgradeable.sol
+@@ -62,7 +62,7 @@ contract WellUpgradeable is Well, UUPSUpgradeable, OwnableUpgradeable {
+      * @notice Check that the execution is being performed through a delegatecall call and that the execution context is
+      * a proxy contract with an ERC1167 minimal proxy from an aquifier, pointing to a well implmentation.
+      */
+-    function _authorizeUpgrade(address newImplmentation) internal view override {
++    function _authorizeUpgrade(address newImplmentation) internal view override onlyOwner {
+         // verify the function is called through a delegatecall.
+         require(address(this) != ___self, "Function must be called through delegatecall");
+ 
+diff --git a/src/functions/Stable2.sol b/src/functions/Stable2.sol
+index ca25edc..bd5fed7 100644
+--- a/src/functions/Stable2.sol
++++ b/src/functions/Stable2.sol
+@@ -314,7 +314,7 @@ contract Stable2 is ProportionalLPToken2, IBeanstalkWellFunction {
+         if (decimal0 == 0) {
+             decimal0 = 18;
+         }
+-        if (decimal0 == 0) {
++        if (decimal1 == 0) {
+             decimal1 = 18;
+         }
+         if (decimal0 > 18 || decimal1 > 18) revert InvalidTokenDecimals();

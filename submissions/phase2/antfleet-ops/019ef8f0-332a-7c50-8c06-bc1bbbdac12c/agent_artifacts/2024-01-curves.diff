@@ -1,0 +1,56 @@
+diff --git a/contracts/Curves.sol b/contracts/Curves.sol
+index 817c79b..41e3ea1 100644
+--- a/contracts/Curves.sol
++++ b/contracts/Curves.sol
+@@ -320,10 +320,19 @@ contract Curves is CurvesErrors, Security {
+ 
+         curvesTokenBalance[curvesTokenSubject][from] = curvesTokenBalance[curvesTokenSubject][from] - amount;
+         curvesTokenBalance[curvesTokenSubject][to] = curvesTokenBalance[curvesTokenSubject][to] + amount;
++        _transferFeeBalanceChanges(curvesTokenSubject, from, to);
+ 
+         emit Transfer(curvesTokenSubject, from, to, amount);
+     }
+ 
++    function _transferFeeBalanceChanges(address curvesTokenSubject, address from, address to) internal {
++        if (address(feeRedistributor) == address(0)) return;
++        feeRedistributor.onBalanceChange(curvesTokenSubject, from);
++        if (from != to) {
++            feeRedistributor.onBalanceChange(curvesTokenSubject, to);
++        }
++    }
++
+     // Internal function to add a curvesTokenSubject to the list if not already present
+     function _addOwnedCurvesTokenSubject(address owner_, address curvesTokenSubject) internal {
+         address[] storage subjects = ownedCurvesTokenSubjects[owner_];
+diff --git a/contracts/FeeSplitter.sol b/contracts/FeeSplitter.sol
+index bb24f02..5cd1ed0 100644
+--- a/contracts/FeeSplitter.sol
++++ b/contracts/FeeSplitter.sol
+@@ -32,7 +32,7 @@ contract FeeSplitter is Security {
+ 
+     constructor() Security() {}
+ 
+-    function setCurves(Curves curves_) public {
++    function setCurves(Curves curves_) public onlyOwner {
+         curves = curves_;
+     }
+ 
+diff --git a/contracts/Security.sol b/contracts/Security.sol
+index b1dfee5..ab6a2ae 100644
+--- a/contracts/Security.sol
++++ b/contracts/Security.sol
+@@ -6,12 +6,12 @@ contract Security {
+     mapping(address => bool) public managers;
+ 
+     modifier onlyOwner() {
+-        msg.sender == owner;
++        require(msg.sender == owner, "Caller is not the owner");
+         _;
+     }
+ 
+     modifier onlyManager() {
+-        managers[msg.sender] == true;
++        require(managers[msg.sender] == true, "Caller is not a manager");
+         _;
+     }
+ 

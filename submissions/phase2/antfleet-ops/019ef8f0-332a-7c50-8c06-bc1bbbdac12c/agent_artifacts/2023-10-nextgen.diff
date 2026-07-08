@@ -1,0 +1,106 @@
+diff --git a/hardhat/smart-contracts/AuctionDemo.sol b/hardhat/smart-contracts/AuctionDemo.sol
+index 95533fb..5fac2cd 100644
+--- a/hardhat/smart-contracts/AuctionDemo.sol
++++ b/hardhat/smart-contracts/AuctionDemo.sol
+@@ -102,7 +102,7 @@ contract auctionDemo is Ownable {
+     // claim Token After Auction
+ 
+     function claimAuction(uint256 _tokenid) public WinnerOrAdminRequired(_tokenid,this.claimAuction.selector){
+-        require(block.timestamp >= minter.getAuctionEndTime(_tokenid) && auctionClaim[_tokenid] == false && minter.getAuctionStatus(_tokenid) == true);
++        require(block.timestamp > minter.getAuctionEndTime(_tokenid) && auctionClaim[_tokenid] == false && minter.getAuctionStatus(_tokenid) == true);
+         auctionClaim[_tokenid] = true;
+         uint256 highestBid = returnHighestBid(_tokenid);
+         address ownerOfToken = IERC721(gencore).ownerOf(_tokenid);
+@@ -113,6 +113,7 @@ contract auctionDemo is Ownable {
+                 (bool success, ) = payable(owner()).call{value: highestBid}("");
+                 emit ClaimAuction(owner(), _tokenid, success, highestBid);
+             } else if (auctionInfoData[_tokenid][i].status == true) {
++                auctionInfoData[_tokenid][i].status = false;
+                 (bool success, ) = payable(auctionInfoData[_tokenid][i].bidder).call{value: auctionInfoData[_tokenid][i].bid}("");
+                 emit Refund(auctionInfoData[_tokenid][i].bidder, _tokenid, success, highestBid);
+             } else {}
+@@ -148,4 +149,4 @@ contract auctionDemo is Ownable {
+         return auctionInfoData[_tokenid];
+     }
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/hardhat/smart-contracts/NextGenCore.sol b/hardhat/smart-contracts/NextGenCore.sol
+index 6d294ed..e099763 100644
+--- a/hardhat/smart-contracts/NextGenCore.sol
++++ b/hardhat/smart-contracts/NextGenCore.sol
+@@ -190,12 +190,12 @@ contract NextGenCore is ERC721Enumerable, Ownable, ERC2981 {
+         require(msg.sender == minterContract, "Caller is not the Minter Contract");
+         collectionAdditionalData[_collectionID].collectionCirculationSupply = collectionAdditionalData[_collectionID].collectionCirculationSupply + 1;
+         if (collectionAdditionalData[_collectionID].collectionTotalSupply >= collectionAdditionalData[_collectionID].collectionCirculationSupply) {
+-            _mintProcessing(mintIndex, _mintTo, _tokenData, _collectionID, _saltfun_o);
+             if (phase == 1) {
+                 tokensMintedAllowlistAddress[_collectionID][_mintingAddress] = tokensMintedAllowlistAddress[_collectionID][_mintingAddress] + 1;
+             } else {
+                 tokensMintedPerAddress[_collectionID][_mintingAddress] = tokensMintedPerAddress[_collectionID][_mintingAddress] + 1;
+             }
++            _mintProcessing(mintIndex, _mintTo, _tokenData, _collectionID, _saltfun_o);
+         }
+     }
+ 
+@@ -468,4 +468,4 @@ contract NextGenCore is ERC721Enumerable, Ownable, ERC2981 {
+         return (tokenImageAndAttributes[_tokenId][0],tokenImageAndAttributes[_tokenId][1]);
+     }
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/smart-contracts/AuctionDemo.sol b/smart-contracts/AuctionDemo.sol
+index 95533fb..5fac2cd 100644
+--- a/smart-contracts/AuctionDemo.sol
++++ b/smart-contracts/AuctionDemo.sol
+@@ -102,7 +102,7 @@ contract auctionDemo is Ownable {
+     // claim Token After Auction
+ 
+     function claimAuction(uint256 _tokenid) public WinnerOrAdminRequired(_tokenid,this.claimAuction.selector){
+-        require(block.timestamp >= minter.getAuctionEndTime(_tokenid) && auctionClaim[_tokenid] == false && minter.getAuctionStatus(_tokenid) == true);
++        require(block.timestamp > minter.getAuctionEndTime(_tokenid) && auctionClaim[_tokenid] == false && minter.getAuctionStatus(_tokenid) == true);
+         auctionClaim[_tokenid] = true;
+         uint256 highestBid = returnHighestBid(_tokenid);
+         address ownerOfToken = IERC721(gencore).ownerOf(_tokenid);
+@@ -113,6 +113,7 @@ contract auctionDemo is Ownable {
+                 (bool success, ) = payable(owner()).call{value: highestBid}("");
+                 emit ClaimAuction(owner(), _tokenid, success, highestBid);
+             } else if (auctionInfoData[_tokenid][i].status == true) {
++                auctionInfoData[_tokenid][i].status = false;
+                 (bool success, ) = payable(auctionInfoData[_tokenid][i].bidder).call{value: auctionInfoData[_tokenid][i].bid}("");
+                 emit Refund(auctionInfoData[_tokenid][i].bidder, _tokenid, success, highestBid);
+             } else {}
+@@ -148,4 +149,4 @@ contract auctionDemo is Ownable {
+         return auctionInfoData[_tokenid];
+     }
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/smart-contracts/NextGenCore.sol b/smart-contracts/NextGenCore.sol
+index 6d294ed..e099763 100644
+--- a/smart-contracts/NextGenCore.sol
++++ b/smart-contracts/NextGenCore.sol
+@@ -190,12 +190,12 @@ contract NextGenCore is ERC721Enumerable, Ownable, ERC2981 {
+         require(msg.sender == minterContract, "Caller is not the Minter Contract");
+         collectionAdditionalData[_collectionID].collectionCirculationSupply = collectionAdditionalData[_collectionID].collectionCirculationSupply + 1;
+         if (collectionAdditionalData[_collectionID].collectionTotalSupply >= collectionAdditionalData[_collectionID].collectionCirculationSupply) {
+-            _mintProcessing(mintIndex, _mintTo, _tokenData, _collectionID, _saltfun_o);
+             if (phase == 1) {
+                 tokensMintedAllowlistAddress[_collectionID][_mintingAddress] = tokensMintedAllowlistAddress[_collectionID][_mintingAddress] + 1;
+             } else {
+                 tokensMintedPerAddress[_collectionID][_mintingAddress] = tokensMintedPerAddress[_collectionID][_mintingAddress] + 1;
+             }
++            _mintProcessing(mintIndex, _mintTo, _tokenData, _collectionID, _saltfun_o);
+         }
+     }
+ 
+@@ -468,4 +468,4 @@ contract NextGenCore is ERC721Enumerable, Ownable, ERC2981 {
+         return (tokenImageAndAttributes[_tokenId][0],tokenImageAndAttributes[_tokenId][1]);
+     }
+ 
+-}
+\ No newline at end of file
++}

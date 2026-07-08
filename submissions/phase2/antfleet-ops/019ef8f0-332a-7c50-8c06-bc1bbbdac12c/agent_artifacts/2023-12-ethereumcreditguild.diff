@@ -1,0 +1,46 @@
+diff --git a/src/governance/ProfitManager.sol b/src/governance/ProfitManager.sol
+index e7b6010..53c8f8f 100644
+--- a/src/governance/ProfitManager.sol
++++ b/src/governance/ProfitManager.sol
+@@ -413,14 +413,15 @@ contract ProfitManager is CoreRef {
+         uint256 _userGaugeWeight = uint256(
+             GuildToken(guild).getUserGaugeWeight(user, gauge)
+         );
+-        if (_userGaugeWeight == 0) {
+-            return 0;
+-        }
+         uint256 _gaugeProfitIndex = gaugeProfitIndex[gauge];
+-        uint256 _userGaugeProfitIndex = userGaugeProfitIndex[user][gauge];
+         if (_gaugeProfitIndex == 0) {
+             _gaugeProfitIndex = 1e18;
+         }
++        if (_userGaugeWeight == 0) {
++            userGaugeProfitIndex[user][gauge] = _gaugeProfitIndex;
++            return 0;
++        }
++        uint256 _userGaugeProfitIndex = userGaugeProfitIndex[user][gauge];
+         if (_userGaugeProfitIndex == 0) {
+             _userGaugeProfitIndex = 1e18;
+         }
+diff --git a/src/tokens/ERC20RebaseDistributor.sol b/src/tokens/ERC20RebaseDistributor.sol
+index 07ba797..c495951 100644
+--- a/src/tokens/ERC20RebaseDistributor.sol
++++ b/src/tokens/ERC20RebaseDistributor.sol
+@@ -554,6 +554,8 @@ abstract contract ERC20RebaseDistributor is ERC20 {
+         address to,
+         uint256 amount
+     ) public virtual override returns (bool) {
++        require(msg.sender != to, "ERC20: self transfer");
++
+         // if `from` is rebasing, materialize the tokens from rebase to ensure
+         // proper behavior in `ERC20.transfer()`.
+         RebasingState memory rebasingStateFrom = rebasingState[msg.sender];
+@@ -648,6 +650,8 @@ abstract contract ERC20RebaseDistributor is ERC20 {
+         address to,
+         uint256 amount
+     ) public virtual override returns (bool) {
++        require(from != to, "ERC20: self transfer");
++
+         // if `from` is rebasing, materialize the tokens from rebase to ensure
+         // proper behavior in `ERC20.transfer()`.
+         RebasingState memory rebasingStateFrom = rebasingState[from];
