@@ -1,0 +1,330 @@
+diff --git a/hardhat/smart-contracts/AuctionDemo.sol b/hardhat/smart-contracts/AuctionDemo.sol
+index 95533fb..b950161 100644
+--- a/hardhat/smart-contracts/AuctionDemo.sol
++++ b/hardhat/smart-contracts/AuctionDemo.sol
+@@ -52,6 +52,9 @@ contract auctionDemo is Ownable {
+     // claim auctioned
+     mapping (uint256 => bool) public auctionClaim;
+ 
++    // pull-based refunds credited during auction settlement
++    mapping (address => uint256) public pendingRefunds;
++
+     // participate to auction
+ 
+     function participateToAuction(uint256 _tokenid) public payable {
+@@ -89,6 +92,7 @@ contract auctionDemo is Ownable {
+         uint256 index;
+         for (uint256 i=0; i< auctionInfoData[_tokenid].length; i++) {
+             if (auctionInfoData[_tokenid][i].bid > highBid && auctionInfoData[_tokenid][i].status == true) {
++                highBid = auctionInfoData[_tokenid][i].bid;
+                 index = i;
+             }
+         }
+@@ -109,16 +113,31 @@ contract auctionDemo is Ownable {
+         address highestBidder = returnHighestBidder(_tokenid);
+         for (uint256 i=0; i< auctionInfoData[_tokenid].length; i ++) {
+             if (auctionInfoData[_tokenid][i].bidder == highestBidder && auctionInfoData[_tokenid][i].bid == highestBid && auctionInfoData[_tokenid][i].status == true) {
++                auctionInfoData[_tokenid][i].status = false;
+                 IERC721(gencore).safeTransferFrom(ownerOfToken, highestBidder, _tokenid);
+-                (bool success, ) = payable(owner()).call{value: highestBid}("");
+-                emit ClaimAuction(owner(), _tokenid, success, highestBid);
++                (bool success, ) = payable(ownerOfToken).call{value: highestBid}("");
++                require(success, "Transfer failed");
++                emit ClaimAuction(ownerOfToken, _tokenid, success, highestBid);
+             } else if (auctionInfoData[_tokenid][i].status == true) {
+-                (bool success, ) = payable(auctionInfoData[_tokenid][i].bidder).call{value: auctionInfoData[_tokenid][i].bid}("");
+-                emit Refund(auctionInfoData[_tokenid][i].bidder, _tokenid, success, highestBid);
++                uint256 bidAmount = auctionInfoData[_tokenid][i].bid;
++                address bidder = auctionInfoData[_tokenid][i].bidder;
++                auctionInfoData[_tokenid][i].status = false;
++                pendingRefunds[bidder] = pendingRefunds[bidder] + bidAmount;
++                emit Refund(bidder, _tokenid, true, bidAmount);
+             } else {}
+         }
+     }
+ 
++    // withdraw refunds credited after auction settlement
++
++    function withdrawPendingRefunds() public {
++        uint256 refund = pendingRefunds[msg.sender];
++        require(refund > 0, "No refund");
++        pendingRefunds[msg.sender] = 0;
++        (bool success, ) = payable(msg.sender).call{value: refund}("");
++        require(success, "Transfer failed");
++    }
++
+     // cancel a single Bid
+ 
+     function cancelBid(uint256 _tokenid, uint256 index) public {
+@@ -126,6 +145,7 @@ contract auctionDemo is Ownable {
+         require(auctionInfoData[_tokenid][index].bidder == msg.sender && auctionInfoData[_tokenid][index].status == true);
+         auctionInfoData[_tokenid][index].status = false;
+         (bool success, ) = payable(auctionInfoData[_tokenid][index].bidder).call{value: auctionInfoData[_tokenid][index].bid}("");
++        require(success, "Transfer failed");
+         emit CancelBid(msg.sender, _tokenid, index, success, auctionInfoData[_tokenid][index].bid);
+     }
+ 
+@@ -137,6 +157,7 @@ contract auctionDemo is Ownable {
+             if (auctionInfoData[_tokenid][i].bidder == msg.sender && auctionInfoData[_tokenid][i].status == true) {
+                 auctionInfoData[_tokenid][i].status = false;
+                 (bool success, ) = payable(auctionInfoData[_tokenid][i].bidder).call{value: auctionInfoData[_tokenid][i].bid}("");
++                require(success, "Transfer failed");
+                 emit CancelBid(msg.sender, _tokenid, i, success, auctionInfoData[_tokenid][i].bid);
+             } else {}
+         }
+@@ -148,4 +169,4 @@ contract auctionDemo is Ownable {
+         return auctionInfoData[_tokenid];
+     }
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/hardhat/smart-contracts/MinterContract.sol b/hardhat/smart-contracts/MinterContract.sol
+index df50841..1321a5c 100644
+--- a/hardhat/smart-contracts/MinterContract.sol
++++ b/hardhat/smart-contracts/MinterContract.sol
+@@ -37,6 +37,9 @@ contract NextGenMinterContract is Ownable {
+     // mint tokens on a specific collection after burning a token on an external collection
+     mapping (bytes32 => mapping (uint256 => bool)) public burnExternalToMintCollections;
+ 
++    // external tokens that have already been consumed to mint a NextGen token
++    mapping (bytes32 => mapping (uint256 => mapping (uint256 => bool))) public externalTokenUsed;
++
+     // check if minting costs were set
+     mapping (uint256 => bool) private setMintingCosts;
+ 
+@@ -337,6 +340,9 @@ contract NextGenMinterContract is Ownable {
+             require(isAllowedToMint == true, "No delegation");
+         }
+         require(_tokenId >= burnOrSwapIds[externalCol][0] && _tokenId <= burnOrSwapIds[externalCol][1], "Token id does not match");
++        bytes32 externalToken = keccak256(abi.encodePacked(_erc721Collection));
++        require(externalTokenUsed[externalToken][0][_tokenId] == false, "Token already used");
++        externalTokenUsed[externalToken][0][_tokenId] = true;
+         IERC721(_erc721Collection).safeTransferFrom(ownerOfToken, burnOrSwapAddress[externalCol], _tokenId);
+         uint256 col = _mintCollectionID;
+         address mintingAddress;
+@@ -436,6 +442,7 @@ contract NextGenMinterContract is Ownable {
+         (bool success3, ) = payable(collectionArtistPrimaryAddresses[colId].primaryAdd3).call{value: artistRoyalties3}("");
+         (bool success4, ) = payable(tm1).call{value: teamRoyalties1}("");
+         (bool success5, ) = payable(tm2).call{value: teamRoyalties2}("");
++        require(success1 && success2 && success3 && success4 && success5, "Transfer failed");
+         emit PayArtist(collectionArtistPrimaryAddresses[colId].primaryAdd1, success1, artistRoyalties1);
+         emit PayArtist(collectionArtistPrimaryAddresses[colId].primaryAdd2, success2, artistRoyalties2);
+         emit PayArtist(collectionArtistPrimaryAddresses[colId].primaryAdd3, success3, artistRoyalties3);
+@@ -462,6 +469,7 @@ contract NextGenMinterContract is Ownable {
+         uint balance = address(this).balance;
+         address admin = adminsContract.owner();
+         (bool success, ) = payable(admin).call{value: balance}("");
++        require(success, "Transfer failed");
+         emit Withdraw(msg.sender, success, balance);
+     }
+ 
+@@ -567,4 +575,4 @@ contract NextGenMinterContract is Ownable {
+         }
+     }
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/hardhat/smart-contracts/NextGenCore.sol b/hardhat/smart-contracts/NextGenCore.sol
+index 6d294ed..e099763 100644
+--- a/hardhat/smart-contracts/NextGenCore.sol
++++ b/hardhat/smart-contracts/NextGenCore.sol
+@@ -190,12 +190,12 @@ contract NextGenCore is ERC721Enumerable, Ownable, ERC2981 {
+         require(msg.sender == minterContract, "Caller is not the Minter Contract");
+         collectionAdditionalData[_collectionID].collectionCirculationSupply = collectionAdditionalData[_collectionID].collectionCirculationSupply + 1;
+         if (collectionAdditionalData[_collectionID].collectionTotalSupply >= collectionAdditionalData[_collectionID].collectionCirculationSupply) {
+-            _mintProcessing(mintIndex, _mintTo, _tokenData, _collectionID, _saltfun_o);
+             if (phase == 1) {
+                 tokensMintedAllowlistAddress[_collectionID][_mintingAddress] = tokensMintedAllowlistAddress[_collectionID][_mintingAddress] + 1;
+             } else {
+                 tokensMintedPerAddress[_collectionID][_mintingAddress] = tokensMintedPerAddress[_collectionID][_mintingAddress] + 1;
+             }
++            _mintProcessing(mintIndex, _mintTo, _tokenData, _collectionID, _saltfun_o);
+         }
+     }
+ 
+@@ -468,4 +468,4 @@ contract NextGenCore is ERC721Enumerable, Ownable, ERC2981 {
+         return (tokenImageAndAttributes[_tokenId][0],tokenImageAndAttributes[_tokenId][1]);
+     }
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/hardhat/smart-contracts/RandomizerRNG.sol b/hardhat/smart-contracts/RandomizerRNG.sol
+index a3b2cbc..0feb723 100644
+--- a/hardhat/smart-contracts/RandomizerRNG.sol
++++ b/hardhat/smart-contracts/RandomizerRNG.sol
+@@ -80,6 +80,7 @@ contract NextGenRandomizerRNG is ArrngConsumer, Ownable {
+         uint balance = address(this).balance;
+         address admin = adminsContract.owner();
+         (bool success, ) = payable(admin).call{value: balance}("");
++        require(success, "Transfer failed");
+         emit Withdraw(msg.sender, success, balance);
+     }
+ 
+diff --git a/smart-contracts/AuctionDemo.sol b/smart-contracts/AuctionDemo.sol
+index 95533fb..b950161 100644
+--- a/smart-contracts/AuctionDemo.sol
++++ b/smart-contracts/AuctionDemo.sol
+@@ -52,6 +52,9 @@ contract auctionDemo is Ownable {
+     // claim auctioned
+     mapping (uint256 => bool) public auctionClaim;
+ 
++    // pull-based refunds credited during auction settlement
++    mapping (address => uint256) public pendingRefunds;
++
+     // participate to auction
+ 
+     function participateToAuction(uint256 _tokenid) public payable {
+@@ -89,6 +92,7 @@ contract auctionDemo is Ownable {
+         uint256 index;
+         for (uint256 i=0; i< auctionInfoData[_tokenid].length; i++) {
+             if (auctionInfoData[_tokenid][i].bid > highBid && auctionInfoData[_tokenid][i].status == true) {
++                highBid = auctionInfoData[_tokenid][i].bid;
+                 index = i;
+             }
+         }
+@@ -109,16 +113,31 @@ contract auctionDemo is Ownable {
+         address highestBidder = returnHighestBidder(_tokenid);
+         for (uint256 i=0; i< auctionInfoData[_tokenid].length; i ++) {
+             if (auctionInfoData[_tokenid][i].bidder == highestBidder && auctionInfoData[_tokenid][i].bid == highestBid && auctionInfoData[_tokenid][i].status == true) {
++                auctionInfoData[_tokenid][i].status = false;
+                 IERC721(gencore).safeTransferFrom(ownerOfToken, highestBidder, _tokenid);
+-                (bool success, ) = payable(owner()).call{value: highestBid}("");
+-                emit ClaimAuction(owner(), _tokenid, success, highestBid);
++                (bool success, ) = payable(ownerOfToken).call{value: highestBid}("");
++                require(success, "Transfer failed");
++                emit ClaimAuction(ownerOfToken, _tokenid, success, highestBid);
+             } else if (auctionInfoData[_tokenid][i].status == true) {
+-                (bool success, ) = payable(auctionInfoData[_tokenid][i].bidder).call{value: auctionInfoData[_tokenid][i].bid}("");
+-                emit Refund(auctionInfoData[_tokenid][i].bidder, _tokenid, success, highestBid);
++                uint256 bidAmount = auctionInfoData[_tokenid][i].bid;
++                address bidder = auctionInfoData[_tokenid][i].bidder;
++                auctionInfoData[_tokenid][i].status = false;
++                pendingRefunds[bidder] = pendingRefunds[bidder] + bidAmount;
++                emit Refund(bidder, _tokenid, true, bidAmount);
+             } else {}
+         }
+     }
+ 
++    // withdraw refunds credited after auction settlement
++
++    function withdrawPendingRefunds() public {
++        uint256 refund = pendingRefunds[msg.sender];
++        require(refund > 0, "No refund");
++        pendingRefunds[msg.sender] = 0;
++        (bool success, ) = payable(msg.sender).call{value: refund}("");
++        require(success, "Transfer failed");
++    }
++
+     // cancel a single Bid
+ 
+     function cancelBid(uint256 _tokenid, uint256 index) public {
+@@ -126,6 +145,7 @@ contract auctionDemo is Ownable {
+         require(auctionInfoData[_tokenid][index].bidder == msg.sender && auctionInfoData[_tokenid][index].status == true);
+         auctionInfoData[_tokenid][index].status = false;
+         (bool success, ) = payable(auctionInfoData[_tokenid][index].bidder).call{value: auctionInfoData[_tokenid][index].bid}("");
++        require(success, "Transfer failed");
+         emit CancelBid(msg.sender, _tokenid, index, success, auctionInfoData[_tokenid][index].bid);
+     }
+ 
+@@ -137,6 +157,7 @@ contract auctionDemo is Ownable {
+             if (auctionInfoData[_tokenid][i].bidder == msg.sender && auctionInfoData[_tokenid][i].status == true) {
+                 auctionInfoData[_tokenid][i].status = false;
+                 (bool success, ) = payable(auctionInfoData[_tokenid][i].bidder).call{value: auctionInfoData[_tokenid][i].bid}("");
++                require(success, "Transfer failed");
+                 emit CancelBid(msg.sender, _tokenid, i, success, auctionInfoData[_tokenid][i].bid);
+             } else {}
+         }
+@@ -148,4 +169,4 @@ contract auctionDemo is Ownable {
+         return auctionInfoData[_tokenid];
+     }
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/smart-contracts/MinterContract.sol b/smart-contracts/MinterContract.sol
+index df50841..1321a5c 100644
+--- a/smart-contracts/MinterContract.sol
++++ b/smart-contracts/MinterContract.sol
+@@ -37,6 +37,9 @@ contract NextGenMinterContract is Ownable {
+     // mint tokens on a specific collection after burning a token on an external collection
+     mapping (bytes32 => mapping (uint256 => bool)) public burnExternalToMintCollections;
+ 
++    // external tokens that have already been consumed to mint a NextGen token
++    mapping (bytes32 => mapping (uint256 => mapping (uint256 => bool))) public externalTokenUsed;
++
+     // check if minting costs were set
+     mapping (uint256 => bool) private setMintingCosts;
+ 
+@@ -337,6 +340,9 @@ contract NextGenMinterContract is Ownable {
+             require(isAllowedToMint == true, "No delegation");
+         }
+         require(_tokenId >= burnOrSwapIds[externalCol][0] && _tokenId <= burnOrSwapIds[externalCol][1], "Token id does not match");
++        bytes32 externalToken = keccak256(abi.encodePacked(_erc721Collection));
++        require(externalTokenUsed[externalToken][0][_tokenId] == false, "Token already used");
++        externalTokenUsed[externalToken][0][_tokenId] = true;
+         IERC721(_erc721Collection).safeTransferFrom(ownerOfToken, burnOrSwapAddress[externalCol], _tokenId);
+         uint256 col = _mintCollectionID;
+         address mintingAddress;
+@@ -436,6 +442,7 @@ contract NextGenMinterContract is Ownable {
+         (bool success3, ) = payable(collectionArtistPrimaryAddresses[colId].primaryAdd3).call{value: artistRoyalties3}("");
+         (bool success4, ) = payable(tm1).call{value: teamRoyalties1}("");
+         (bool success5, ) = payable(tm2).call{value: teamRoyalties2}("");
++        require(success1 && success2 && success3 && success4 && success5, "Transfer failed");
+         emit PayArtist(collectionArtistPrimaryAddresses[colId].primaryAdd1, success1, artistRoyalties1);
+         emit PayArtist(collectionArtistPrimaryAddresses[colId].primaryAdd2, success2, artistRoyalties2);
+         emit PayArtist(collectionArtistPrimaryAddresses[colId].primaryAdd3, success3, artistRoyalties3);
+@@ -462,6 +469,7 @@ contract NextGenMinterContract is Ownable {
+         uint balance = address(this).balance;
+         address admin = adminsContract.owner();
+         (bool success, ) = payable(admin).call{value: balance}("");
++        require(success, "Transfer failed");
+         emit Withdraw(msg.sender, success, balance);
+     }
+ 
+@@ -567,4 +575,4 @@ contract NextGenMinterContract is Ownable {
+         }
+     }
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/smart-contracts/NextGenCore.sol b/smart-contracts/NextGenCore.sol
+index 6d294ed..e099763 100644
+--- a/smart-contracts/NextGenCore.sol
++++ b/smart-contracts/NextGenCore.sol
+@@ -190,12 +190,12 @@ contract NextGenCore is ERC721Enumerable, Ownable, ERC2981 {
+         require(msg.sender == minterContract, "Caller is not the Minter Contract");
+         collectionAdditionalData[_collectionID].collectionCirculationSupply = collectionAdditionalData[_collectionID].collectionCirculationSupply + 1;
+         if (collectionAdditionalData[_collectionID].collectionTotalSupply >= collectionAdditionalData[_collectionID].collectionCirculationSupply) {
+-            _mintProcessing(mintIndex, _mintTo, _tokenData, _collectionID, _saltfun_o);
+             if (phase == 1) {
+                 tokensMintedAllowlistAddress[_collectionID][_mintingAddress] = tokensMintedAllowlistAddress[_collectionID][_mintingAddress] + 1;
+             } else {
+                 tokensMintedPerAddress[_collectionID][_mintingAddress] = tokensMintedPerAddress[_collectionID][_mintingAddress] + 1;
+             }
++            _mintProcessing(mintIndex, _mintTo, _tokenData, _collectionID, _saltfun_o);
+         }
+     }
+ 
+@@ -468,4 +468,4 @@ contract NextGenCore is ERC721Enumerable, Ownable, ERC2981 {
+         return (tokenImageAndAttributes[_tokenId][0],tokenImageAndAttributes[_tokenId][1]);
+     }
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/smart-contracts/RandomizerRNG.sol b/smart-contracts/RandomizerRNG.sol
+index a3b2cbc..0feb723 100644
+--- a/smart-contracts/RandomizerRNG.sol
++++ b/smart-contracts/RandomizerRNG.sol
+@@ -80,6 +80,7 @@ contract NextGenRandomizerRNG is ArrngConsumer, Ownable {
+         uint balance = address(this).balance;
+         address admin = adminsContract.owner();
+         (bool success, ) = payable(admin).call{value: balance}("");
++        require(success, "Transfer failed");
+         emit Withdraw(msg.sender, success, balance);
+     }
+ 

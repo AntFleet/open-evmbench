@@ -1,0 +1,342 @@
+diff --git a/src/LiquidProxy.sol b/src/LiquidProxy.sol
+index 8cf38fe..24dc6eb 100644
+--- a/src/LiquidProxy.sol
++++ b/src/LiquidProxy.sol
+@@ -35,9 +35,7 @@ contract LiquidProxy is RonHelper, ILiquidProxy {
+     /// @param _consensusAddrs The consensus addresses to harvest rewards from
+     /// @return claimedAmount The amount of RON claimed from the staking contract
+     function harvest(address[] calldata _consensusAddrs) external onlyVault returns (uint256) {
+-        for (uint256 i = 0; i < _consensusAddrs.length; i++) {
+-            IRoninValidator(roninStaking).claimRewards(_consensusAddrs);
+-        }
++        IRoninValidator(roninStaking).claimRewards(_consensusAddrs);
+         uint256 claimedAmount = address(this).balance;
+         _depositRONTo(vault, claimedAmount);
+         return claimedAmount;
+@@ -47,10 +45,11 @@ contract LiquidProxy is RonHelper, ILiquidProxy {
+     /// @param _consensusAddrs The consensus addresses to harvest rewards from
+     /// @param _consensusAddrDst The consensus address to delegate the rewards to
+     /// @return claimableAmount The amount of RON claimed from the staking contract
+-    function harvestAndDelegateRewards(
+-        address[] calldata _consensusAddrs,
+-        address _consensusAddrDst
+-    ) external onlyVault returns (uint256) {
++    function harvestAndDelegateRewards(address[] calldata _consensusAddrs, address _consensusAddrDst)
++        external
++        onlyVault
++        returns (uint256)
++    {
+         uint256 claimableAmount = IRoninValidator(roninStaking).delegateRewards(_consensusAddrs, _consensusAddrDst);
+         return claimableAmount;
+     }
+diff --git a/src/LiquidRon.sol b/src/LiquidRon.sol
+index ed26974..7199360 100644
+--- a/src/LiquidRon.sol
++++ b/src/LiquidRon.sol
+@@ -36,6 +36,7 @@ contract LiquidRon is ERC4626, RonHelper, Pausable, ValidatorTracker {
+     error ErrCannotReceiveRon();
+     error ErrNotZero();
+     error ErrNotFeeRecipient();
++    error ErrInvalidArray();
+ 
+     struct WithdrawalRequest {
+         bool fulfilled;
+@@ -88,7 +89,7 @@ contract LiquidRon is ERC4626, RonHelper, Pausable, ValidatorTracker {
+ 
+     /// @dev Modifier to restrict access of a function to an operator or owner
+     modifier onlyOperator() {
+-        if (msg.sender != owner() || operator[msg.sender]) revert ErrInvalidOperator();
++        if (msg.sender != owner() && !operator[msg.sender]) revert ErrInvalidOperator();
+         _;
+     }
+ 
+@@ -133,7 +134,10 @@ contract LiquidRon is ERC4626, RonHelper, Pausable, ValidatorTracker {
+     /// @param _proxyIndex The index of the staking proxy to harvest from
+     /// @param _consensusAddrs The consensus addresses to claim tokens from
+     function harvest(uint256 _proxyIndex, address[] calldata _consensusAddrs) external onlyOperator whenNotPaused {
+-        uint256 harvestedAmount = ILiquidProxy(stakingProxies[_proxyIndex]).harvest(_consensusAddrs);
++        address stakingProxy = stakingProxies[_proxyIndex];
++        if (stakingProxy == address(0)) revert ErrBadProxy();
++
++        uint256 harvestedAmount = ILiquidProxy(stakingProxy).harvest(_consensusAddrs);
+         operatorFeeAmount += (harvestedAmount * operatorFee) / BIPS;
+         emit Harvest(_proxyIndex, harvestedAmount);
+     }
+@@ -147,11 +151,12 @@ contract LiquidRon is ERC4626, RonHelper, Pausable, ValidatorTracker {
+         address[] calldata _consensusAddrs,
+         address _consensusAddrDst
+     ) external onlyOperator whenNotPaused {
++        address stakingProxy = stakingProxies[_proxyIndex];
++        if (stakingProxy == address(0)) revert ErrBadProxy();
++
+         _tryPushValidator(_consensusAddrDst);
+-        uint256 harvestedAmount = ILiquidProxy(stakingProxies[_proxyIndex]).harvestAndDelegateRewards(
+-            _consensusAddrs,
+-            _consensusAddrDst
+-        );
++        uint256 harvestedAmount =
++            ILiquidProxy(stakingProxy).harvestAndDelegateRewards(_consensusAddrs, _consensusAddrDst);
+         operatorFeeAmount += (harvestedAmount * operatorFee) / BIPS;
+         emit Harvest(_proxyIndex, harvestedAmount);
+     }
+@@ -160,15 +165,16 @@ contract LiquidRon is ERC4626, RonHelper, Pausable, ValidatorTracker {
+     /// @param _proxyIndex The index of the staking proxy to delegate from
+     /// @param _amounts The amounts of RON tokens to delegate
+     /// @param _consensusAddrs The consensus addresses to delegate to
+-    function delegateAmount(
+-        uint256 _proxyIndex,
+-        uint256[] calldata _amounts,
+-        address[] calldata _consensusAddrs
+-    ) external onlyOperator whenNotPaused {
++    function delegateAmount(uint256 _proxyIndex, uint256[] calldata _amounts, address[] calldata _consensusAddrs)
++        external
++        onlyOperator
++        whenNotPaused
++    {
+         address stakingProxy = stakingProxies[_proxyIndex];
+         uint256 total;
+ 
+         if (stakingProxy == address(0)) revert ErrBadProxy();
++        if (_amounts.length != _consensusAddrs.length) revert ErrInvalidArray();
+         for (uint256 i = 0; i < _amounts.length; i++) {
+             if (_amounts[i] == 0) revert ErrNotZero();
+             _tryPushValidator(_consensusAddrs[i]);
+@@ -189,24 +195,34 @@ contract LiquidRon is ERC4626, RonHelper, Pausable, ValidatorTracker {
+         address[] calldata _consensusAddrsSrc,
+         address[] calldata _consensusAddrsDst
+     ) external onlyOperator whenNotPaused {
+-        ILiquidProxy(stakingProxies[_proxyIndex]).redelegateAmount(_amounts, _consensusAddrsSrc, _consensusAddrsDst);
++        address stakingProxy = stakingProxies[_proxyIndex];
++        if (stakingProxy == address(0)) revert ErrBadProxy();
++        if (_amounts.length != _consensusAddrsSrc.length || _amounts.length != _consensusAddrsDst.length) {
++            revert ErrInvalidArray();
++        }
+ 
+-        for (uint256 i = 0; i < _consensusAddrsSrc.length; i++) {
++        for (uint256 i = 0; i < _amounts.length; i++) {
+             if (_amounts[i] == 0) revert ErrNotZero();
+             _tryPushValidator(_consensusAddrsDst[i]);
+         }
++
++        ILiquidProxy(stakingProxy).redelegateAmount(_amounts, _consensusAddrsSrc, _consensusAddrsDst);
+     }
+ 
+     /// @dev Undelegates specific amounts of RON tokens from consensus addresses
+     /// @param _proxyIndex The index of the staking proxy to undelegate from
+     /// @param _amounts The amounts of RON tokens to undelegate
+     /// @param _consensusAddrs The consensus addresses to undelegate from
+-    function undelegateAmount(
+-        uint256 _proxyIndex,
+-        uint256[] calldata _amounts,
+-        address[] calldata _consensusAddrs
+-    ) external onlyOperator whenNotPaused {
+-        ILiquidProxy(stakingProxies[_proxyIndex]).undelegateAmount(_amounts, _consensusAddrs);
++    function undelegateAmount(uint256 _proxyIndex, uint256[] calldata _amounts, address[] calldata _consensusAddrs)
++        external
++        onlyOperator
++        whenNotPaused
++    {
++        address stakingProxy = stakingProxies[_proxyIndex];
++        if (stakingProxy == address(0)) revert ErrBadProxy();
++        if (_amounts.length != _consensusAddrs.length) revert ErrInvalidArray();
++
++        ILiquidProxy(stakingProxy).undelegateAmount(_amounts, _consensusAddrs);
+     }
+ 
+     /// @dev Prunes the validator list by removing validators with no rewards and no staking amounts
+@@ -215,7 +231,9 @@ contract LiquidRon is ERC4626, RonHelper, Pausable, ValidatorTracker {
+         uint256 listCount = validatorCount;
+         address[] memory proxies = new address[](stakingProxyCount);
+ 
+-        for (uint256 i = 0; i < proxies.length; i++) proxies[i] = stakingProxies[i];
++        for (uint256 i = 0; i < proxies.length; i++) {
++            proxies[i] = stakingProxies[i];
++        }
+         for (uint256 i = 0; i < listCount; i++) {
+             address vali = validators[listCount - 1 - i];
+             uint256[] memory rewards = new uint256[](proxies.length);
+@@ -226,11 +244,12 @@ contract LiquidRon is ERC4626, RonHelper, Pausable, ValidatorTracker {
+             }
+             uint256[] memory stakingTotals = IRoninValidator(roninStaking).getManyStakingAmounts(valis, proxies);
+             bool canPrune = true;
+-            for (uint256 j = 0; j < proxies.length; j++)
++            for (uint256 j = 0; j < proxies.length; j++) {
+                 if (rewards[j] != 0 || stakingTotals[j] != 0) {
+                     canPrune = false;
+                     break;
+                 }
++            }
+             if (canPrune) _removeValidator(vali);
+         }
+     }
+@@ -264,7 +283,9 @@ contract LiquidRon is ERC4626, RonHelper, Pausable, ValidatorTracker {
+         uint256 proxyCount = stakingProxyCount;
+         uint256 totalStaked;
+ 
+-        for (uint256 i = 0; i < proxyCount; i++) totalStaked += _getTotalStakedInProxy(i, consensusAddrs);
++        for (uint256 i = 0; i < proxyCount; i++) {
++            totalStaked += _getTotalStakedInProxy(i, consensusAddrs);
++        }
+         return totalStaked;
+     }
+ 
+@@ -279,7 +300,9 @@ contract LiquidRon is ERC4626, RonHelper, Pausable, ValidatorTracker {
+         uint256 totalRewards;
+         uint256 totalFees;
+ 
+-        for (uint256 i = 0; i < proxyCount; i++) totalRewards += _getTotalRewardsInProxy(i, consensusAddrs);
++        for (uint256 i = 0; i < proxyCount; i++) {
++            totalRewards += _getTotalRewardsInProxy(i, consensusAddrs);
++        }
+         totalFees = (totalRewards * operatorFee) / BIPS;
+         return totalRewards - totalFees;
+     }
+@@ -291,7 +314,9 @@ contract LiquidRon is ERC4626, RonHelper, Pausable, ValidatorTracker {
+ 
+     /// @dev Gets the total amount of assets the vault controls
+     function totalAssets() public view override returns (uint256) {
+-        return super.totalAssets() + getTotalStaked() + getTotalRewards();
++        uint256 grossAssets = super.totalAssets() + getTotalStaked() + getTotalRewards();
++        uint256 fees = operatorFeeAmount;
++        return grossAssets > fees ? grossAssets - fees : 0;
+     }
+ 
+     //////////////////////
+@@ -300,11 +325,12 @@ contract LiquidRon is ERC4626, RonHelper, Pausable, ValidatorTracker {
+ 
+     /// @dev We override to prevent wrong event emission and send native ron back to user
+     ///		 Acts as the ERC4626 withdraw function
+-    function withdraw(
+-        uint256 _assets,
+-        address _receiver,
+-        address _owner
+-    ) public override whenNotPaused returns (uint256) {
++    function withdraw(uint256 _assets, address _receiver, address _owner)
++        public
++        override
++        whenNotPaused
++        returns (uint256)
++    {
+         uint256 shares = super.withdraw(_assets, address(this), _owner);
+         _withdrawRONTo(_receiver, _assets);
+         emit Withdraw(msg.sender, _receiver, _owner, _assets, shares);
+@@ -313,11 +339,12 @@ contract LiquidRon is ERC4626, RonHelper, Pausable, ValidatorTracker {
+ 
+     /// @dev We override to prevent wrong event emission and send native ron back to user
+     ///		 Acts as the ERC4626 redeem function
+-    function redeem(
+-        uint256 _shares,
+-        address _receiver,
+-        address _owner
+-    ) public override whenNotPaused returns (uint256) {
++    function redeem(uint256 _shares, address _receiver, address _owner)
++        public
++        override
++        whenNotPaused
++        returns (uint256)
++    {
+         uint256 assets = super.redeem(_shares, address(this), _owner);
+         _withdrawRONTo(_receiver, assets);
+         emit Withdraw(msg.sender, _receiver, _owner, assets, _shares);
+@@ -373,6 +400,7 @@ contract LiquidRon is ERC4626, RonHelper, Pausable, ValidatorTracker {
+         _withdrawRONTo(msg.sender, assets);
+         emit WithdrawalClaimed(msg.sender, epoch, shares, assets);
+     }
++
+     ///////////////////////////////
+     /// INTERNAL VIEW FUNCTIONS ///
+     ///////////////////////////////
+@@ -381,15 +409,18 @@ contract LiquidRon is ERC4626, RonHelper, Pausable, ValidatorTracker {
+     /// @param _proxyIndex The index of the staking proxy
+     /// @param _consensusAddrs The consensus addresses to get rewards from
+     /// @return The total rewards in the staking proxy
+-    function _getTotalRewardsInProxy(
+-        uint256 _proxyIndex,
+-        address[] memory _consensusAddrs
+-    ) internal view returns (uint256) {
++    function _getTotalRewardsInProxy(uint256 _proxyIndex, address[] memory _consensusAddrs)
++        internal
++        view
++        returns (uint256)
++    {
+         address user = stakingProxies[_proxyIndex];
+         uint256[] memory rewards = IRoninValidator(roninStaking).getRewards(user, _consensusAddrs);
+         uint256 totalRewards;
+ 
+-        for (uint256 i = 0; i < rewards.length; i++) totalRewards += rewards[i];
++        for (uint256 i = 0; i < rewards.length; i++) {
++            totalRewards += rewards[i];
++        }
+         return totalRewards;
+     }
+ 
+@@ -397,17 +428,22 @@ contract LiquidRon is ERC4626, RonHelper, Pausable, ValidatorTracker {
+     /// @param _proxyIndex The index of the staking proxy
+     /// @param _consensusAddrs The consensus addresses to get staked amounts from
+     /// @return The total staked amount in the staking proxy
+-    function _getTotalStakedInProxy(
+-        uint256 _proxyIndex,
+-        address[] memory _consensusAddrs
+-    ) internal view returns (uint256) {
++    function _getTotalStakedInProxy(uint256 _proxyIndex, address[] memory _consensusAddrs)
++        internal
++        view
++        returns (uint256)
++    {
+         address[] memory users = new address[](_consensusAddrs.length);
+         address user = stakingProxies[_proxyIndex];
+         uint256 totalStaked;
+ 
+-        for (uint256 i = 0; i < _consensusAddrs.length; i++) users[i] = user;
++        for (uint256 i = 0; i < _consensusAddrs.length; i++) {
++            users[i] = user;
++        }
+         uint256[] memory stakedAmounts = IRoninValidator(roninStaking).getManyStakingAmounts(_consensusAddrs, users);
+-        for (uint256 i = 0; i < stakedAmounts.length; i++) totalStaked += stakedAmounts[i];
++        for (uint256 i = 0; i < stakedAmounts.length; i++) {
++            totalStaked += stakedAmounts[i];
++        }
+         return totalStaked;
+     }
+ 
+@@ -416,30 +452,27 @@ contract LiquidRon is ERC4626, RonHelper, Pausable, ValidatorTracker {
+     /// @param _totalAssets The total assets in the contract at time of epoch finalisation
+     /// @param _totalShares The total shares in the contract at time of epoch finalisation
+     /// @return The amount of assets the shares are worth
+-    function _convertToAssets(
+-        uint256 _shares,
+-        uint256 _totalAssets,
+-        uint256 _totalShares
+-    ) internal view returns (uint256) {
++    function _convertToAssets(uint256 _shares, uint256 _totalAssets, uint256 _totalShares)
++        internal
++        view
++        returns (uint256)
++    {
+         return _shares.mulDiv(_totalAssets + 1, _totalShares + 10 ** _decimalsOffset(), Math.Rounding.Floor);
+     }
+ 
+     /// @dev Checks if a user can receive RON tokens
+     /// @param _user The user to check
+     function _checkUserCanReceiveRon(address _user) internal {
+-        (bool success, ) = payable(_user).call{value: 0}("");
++        (bool success,) = payable(_user).call{value: 0}("");
+         if (!success) revert ErrCannotReceiveRon();
+     }
+ 
+     /// @dev We override to remove the event emission to prevent wrong data emission and use `asset()` since _asset is private
+     ///      The receiver would be the vault with the new withdrawal flow. The Withdraw event has been moved in the withdraw and redeem functions
+-    function _withdraw(
+-        address caller,
+-        address receiver,
+-        address owner,
+-        uint256 assets,
+-        uint256 shares
+-    ) internal override {
++    function _withdraw(address caller, address receiver, address owner, uint256 assets, uint256 shares)
++        internal
++        override
++    {
+         if (caller != owner) {
+             _spendAllowance(owner, caller, shares);
+         }

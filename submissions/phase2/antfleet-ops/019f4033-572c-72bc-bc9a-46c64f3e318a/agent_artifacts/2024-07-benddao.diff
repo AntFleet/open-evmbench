@@ -1,0 +1,231 @@
+diff --git a/src/libraries/logic/IsolateLogic.sol b/src/libraries/logic/IsolateLogic.sol
+index be67080..2ff995b 100644
+--- a/src/libraries/logic/IsolateLogic.sol
++++ b/src/libraries/logic/IsolateLogic.sol
+@@ -129,8 +129,12 @@ library IsolateLogic {
+     for (vars.nidx = 0; vars.nidx < params.nftTokenIds.length; vars.nidx++) {
+       DataTypes.IsolateLoanData storage loanData = poolData.loanLookup[params.nftAsset][params.nftTokenIds[vars.nidx]];
+       DataTypes.GroupData storage debtGroupData = debtAssetData.groupLookup[loanData.reserveGroup];
++      DataTypes.ERC721TokenData storage tokenData = VaultLogic.erc721GetTokenData(
++        nftAssetData,
++        params.nftTokenIds[vars.nidx]
++      );
+ 
+-      ValidateLogic.validateIsolateRepayLoan(params, debtGroupData, loanData);
++      ValidateLogic.validateIsolateRepayLoan(params, debtGroupData, loanData, tokenData);
+ 
+       vars.isFullRepay = false;
+       vars.scaledRepayAmount = params.amounts[vars.nidx].rayDiv(debtGroupData.borrowIndex);
+@@ -314,8 +318,12 @@ library IsolateLogic {
+     for (vars.nidx = 0; vars.nidx < params.nftTokenIds.length; vars.nidx++) {
+       DataTypes.IsolateLoanData storage loanData = poolData.loanLookup[params.nftAsset][params.nftTokenIds[vars.nidx]];
+       DataTypes.GroupData storage debtGroupData = debtAssetData.groupLookup[loanData.reserveGroup];
++      DataTypes.ERC721TokenData storage tokenData = VaultLogic.erc721GetTokenData(
++        nftAssetData,
++        params.nftTokenIds[vars.nidx]
++      );
+ 
+-      ValidateLogic.validateIsolateRedeemLoan(params, debtGroupData, loanData);
++      ValidateLogic.validateIsolateRedeemLoan(params, debtGroupData, loanData, tokenData);
+ 
+       vars.auctionEndTimestamp = loanData.bidStartTimestamp + nftAssetData.auctionDuration;
+       require(block.timestamp <= vars.auctionEndTimestamp, Errors.ISOLATE_BID_AUCTION_DURATION_HAS_END);
+@@ -448,6 +456,8 @@ library IsolateLogic {
+       vars.totalBidAmount += loanData.bidAmount;
+       vars.totalExtraAmount += vars.extraBorrowAmounts[vars.nidx];
+ 
++      VaultLogic.erc721SetTokenLockerAddr(nftAssetData, params.nftTokenIds[vars.nidx], address(0));
++
+       // delete the loan data at final
+       delete poolData.loanLookup[params.nftAsset][params.nftTokenIds[vars.nidx]];
+     }
+diff --git a/src/libraries/logic/SupplyLogic.sol b/src/libraries/logic/SupplyLogic.sol
+index 350d515..955c865 100644
+--- a/src/libraries/logic/SupplyLogic.sol
++++ b/src/libraries/logic/SupplyLogic.sol
+@@ -37,7 +37,7 @@ library SupplyLogic {
+     emit Events.DepositERC20(params.msgSender, params.poolId, params.asset, params.amount, params.onBehalf);
+   }
+ 
+-  function executeWithdrawERC20(InputTypes.ExecuteWithdrawERC20Params memory params) internal {
++  function executeWithdrawERC20(InputTypes.ExecuteWithdrawERC20Params memory params) internal returns (uint256) {
+     DataTypes.PoolStorage storage ps = StorageSlot.getPoolStorage();
+ 
+     DataTypes.PoolData storage poolData = ps.poolLookup[params.poolId];
+@@ -77,6 +77,8 @@ library SupplyLogic {
+       params.onBehalf,
+       params.receiver
+     );
++
++    return params.amount;
+   }
+ 
+   function executeDepositERC721(InputTypes.ExecuteDepositERC721Params memory params) internal {
+diff --git a/src/libraries/logic/ValidateLogic.sol b/src/libraries/logic/ValidateLogic.sol
+index 4c287a9..d40d32c 100644
+--- a/src/libraries/logic/ValidateLogic.sol
++++ b/src/libraries/logic/ValidateLogic.sol
+@@ -503,10 +503,12 @@ library ValidateLogic {
+   function validateIsolateRepayLoan(
+     InputTypes.ExecuteIsolateRepayParams memory inputParams,
+     DataTypes.GroupData storage debtGroupData,
+-    DataTypes.IsolateLoanData storage loanData
++    DataTypes.IsolateLoanData storage loanData,
++    DataTypes.ERC721TokenData storage tokenData
+   ) internal view {
+     validateGroupBasic(debtGroupData);
+ 
++    require(tokenData.owner == inputParams.onBehalf, Errors.ISOLATE_LOAN_OWNER_NOT_MATCH);
+     require(loanData.loanStatus == Constants.LOAN_STATUS_ACTIVE, Errors.INVALID_LOAN_STATUS);
+     require(loanData.reserveAsset == inputParams.asset, Errors.ISOLATE_LOAN_ASSET_NOT_MATCH);
+   }
+@@ -572,10 +574,12 @@ library ValidateLogic {
+   function validateIsolateRedeemLoan(
+     InputTypes.ExecuteIsolateRedeemParams memory inputParams,
+     DataTypes.GroupData storage debtGroupData,
+-    DataTypes.IsolateLoanData storage loanData
++    DataTypes.IsolateLoanData storage loanData,
++    DataTypes.ERC721TokenData storage tokenData
+   ) internal view {
+     validateGroupBasic(debtGroupData);
+ 
++    require(tokenData.owner == inputParams.msgSender, Errors.ISOLATE_LOAN_OWNER_NOT_MATCH);
+     require(loanData.loanStatus == Constants.LOAN_STATUS_AUCTION, Errors.INVALID_LOAN_STATUS);
+     require(loanData.reserveAsset == inputParams.asset, Errors.ISOLATE_LOAN_ASSET_NOT_MATCH);
+   }
+diff --git a/src/libraries/logic/YieldLogic.sol b/src/libraries/logic/YieldLogic.sol
+index 1aebd0b..2e63993 100644
+--- a/src/libraries/logic/YieldLogic.sol
++++ b/src/libraries/logic/YieldLogic.sol
+@@ -48,7 +48,7 @@ library YieldLogic {
+ 
+     ValidateLogic.validateYieldBorrowERC20(params, poolData, assetData, groupData);
+ 
+-    vars.totalSupply = VaultLogic.erc20GetTotalCrossSupply(assetData, groupData.borrowIndex);
++    vars.totalSupply = VaultLogic.erc20GetTotalCrossSupply(assetData, assetData.supplyIndex);
+ 
+     // check asset level yield cap limit
+     vars.totalBorrow = VaultLogic.erc20GetTotalCrossBorrowInGroup(groupData, groupData.borrowIndex);
+diff --git a/src/modules/BVault.sol b/src/modules/BVault.sol
+index 7bd75c6..2f1835e 100644
+--- a/src/modules/BVault.sol
++++ b/src/modules/BVault.sol
+@@ -59,7 +59,7 @@ contract BVault is BaseModule {
+       asset = ps.wrappedNativeToken;
+     }
+ 
+-    SupplyLogic.executeWithdrawERC20(
++    uint256 withdrawAmount = SupplyLogic.executeWithdrawERC20(
+       InputTypes.ExecuteWithdrawERC20Params({
+         msgSender: msgSender,
+         poolId: poolId,
+@@ -71,7 +71,7 @@ contract BVault is BaseModule {
+     );
+ 
+     if (isNative) {
+-      VaultLogic.unwrapNativeTokenInWallet(asset, msgSender, amount);
++      VaultLogic.unwrapNativeTokenInWallet(asset, msgSender, withdrawAmount);
+     }
+   }
+ 
+diff --git a/src/yield/YieldStakingBase.sol b/src/yield/YieldStakingBase.sol
+index 50003b9..756b6e2 100644
+--- a/src/yield/YieldStakingBase.sol
++++ b/src/yield/YieldStakingBase.sol
+@@ -309,9 +309,6 @@ abstract contract YieldStakingBase is Initializable, PausableUpgradeable, Reentr
+   function _unstake(uint32 poolId, address nft, uint256 tokenId, uint256 unstakeFine) internal virtual {
+     UnstakeLocalVars memory vars;
+ 
+-    vars.yieldAccout = IYieldAccount(yieldAccounts[msg.sender]);
+-    require(address(vars.yieldAccout) != address(0), Errors.YIELD_ACCOUNT_NOT_EXIST);
+-
+     YieldNftConfig storage nc = nftConfigs[nft];
+     require(nc.isActive, Errors.YIELD_ETH_NFT_NOT_ACTIVE);
+ 
+@@ -325,6 +322,9 @@ abstract contract YieldStakingBase is Initializable, PausableUpgradeable, Reentr
+     require(sd.state == Constants.YIELD_STATUS_ACTIVE, Errors.YIELD_ETH_STATUS_NOT_ACTIVE);
+     require(sd.poolId == poolId, Errors.YIELD_ETH_POOL_NOT_SAME);
+ 
++    vars.yieldAccout = IYieldAccount(sd.yieldAccount);
++    require(address(vars.yieldAccout) != address(0), Errors.YIELD_ACCOUNT_NOT_EXIST);
++
+     // sender must be bot or nft owner
+     if (msg.sender == botAdmin) {
+       require(unstakeFine <= nc.maxUnstakeFine, Errors.YIELD_ETH_EXCEED_MAX_FINE);
+@@ -381,9 +381,6 @@ abstract contract YieldStakingBase is Initializable, PausableUpgradeable, Reentr
+   function _repay(uint32 poolId, address nft, uint256 tokenId) internal virtual {
+     RepayLocalVars memory vars;
+ 
+-    vars.yieldAccout = IYieldAccount(yieldAccounts[msg.sender]);
+-    require(address(vars.yieldAccout) != address(0), Errors.YIELD_ACCOUNT_NOT_EXIST);
+-
+     YieldNftConfig memory nc = nftConfigs[nft];
+     require(nc.isActive, Errors.YIELD_ETH_NFT_NOT_ACTIVE);
+ 
+@@ -391,6 +388,9 @@ abstract contract YieldStakingBase is Initializable, PausableUpgradeable, Reentr
+     require(sd.state == Constants.YIELD_STATUS_UNSTAKE, Errors.YIELD_ETH_STATUS_NOT_UNSTAKE);
+     require(sd.poolId == poolId, Errors.YIELD_ETH_POOL_NOT_SAME);
+ 
++    vars.yieldAccout = IYieldAccount(sd.yieldAccount);
++    require(address(vars.yieldAccout) != address(0), Errors.YIELD_ACCOUNT_NOT_EXIST);
++
+     require(protocolIsClaimReady(sd), Errors.YIELD_ETH_WITHDRAW_NOT_READY);
+ 
+     // check the nft ownership
+diff --git a/src/yield/etherfi/YieldEthStakingEtherfi.sol b/src/yield/etherfi/YieldEthStakingEtherfi.sol
+index dcd9d9b..ca9da78 100644
+--- a/src/yield/etherfi/YieldEthStakingEtherfi.sol
++++ b/src/yield/etherfi/YieldEthStakingEtherfi.sol
+@@ -81,7 +81,7 @@ contract YieldEthStakingEtherfi is YieldStakingBase {
+   }
+ 
+   function protocolRequestWithdrawal(YieldStakeData storage sd) internal virtual override {
+-    IYieldAccount yieldAccount = IYieldAccount(yieldAccounts[msg.sender]);
++    IYieldAccount yieldAccount = IYieldAccount(sd.yieldAccount);
+     bytes memory result = yieldAccount.execute(
+       address(liquidityPool),
+       abi.encodeWithSelector(ILiquidityPool.requestWithdraw.selector, address(yieldAccount), sd.withdrawAmount)
+@@ -92,7 +92,7 @@ contract YieldEthStakingEtherfi is YieldStakingBase {
+   }
+ 
+   function protocolClaimWithdraw(YieldStakeData storage sd) internal virtual override returns (uint256) {
+-    IYieldAccount yieldAccount = IYieldAccount(yieldAccounts[msg.sender]);
++    IYieldAccount yieldAccount = IYieldAccount(sd.yieldAccount);
+ 
+     uint256 claimedEth = address(yieldAccount).balance;
+     yieldAccount.execute(
+diff --git a/src/yield/lido/YieldEthStakingLido.sol b/src/yield/lido/YieldEthStakingLido.sol
+index 00dd7d5..a73856d 100644
+--- a/src/yield/lido/YieldEthStakingLido.sol
++++ b/src/yield/lido/YieldEthStakingLido.sol
+@@ -79,7 +79,7 @@ contract YieldEthStakingLido is YieldStakingBase {
+   }
+ 
+   function protocolRequestWithdrawal(YieldStakeData storage sd) internal virtual override {
+-    IYieldAccount yieldAccount = IYieldAccount(yieldAccounts[msg.sender]);
++    IYieldAccount yieldAccount = IYieldAccount(sd.yieldAccount);
+ 
+     uint256[] memory requestAmounts = new uint256[](1);
+     requestAmounts[0] = sd.withdrawAmount;
+@@ -93,7 +93,7 @@ contract YieldEthStakingLido is YieldStakingBase {
+   }
+ 
+   function protocolClaimWithdraw(YieldStakeData storage sd) internal virtual override returns (uint256) {
+-    IYieldAccount yieldAccount = IYieldAccount(yieldAccounts[msg.sender]);
++    IYieldAccount yieldAccount = IYieldAccount(sd.yieldAccount);
+ 
+     uint256 claimedEth = address(yieldAccount).balance;
+     yieldAccount.execute(address(unstETH), abi.encodeWithSelector(IUnstETH.claimWithdrawal.selector, sd.withdrawReqId));
+diff --git a/src/yield/sdai/YieldSavingsDai.sol b/src/yield/sdai/YieldSavingsDai.sol
+index 829e9a5..5c3a9fe 100644
+--- a/src/yield/sdai/YieldSavingsDai.sol
++++ b/src/yield/sdai/YieldSavingsDai.sol
+@@ -96,7 +96,7 @@ contract YieldSavingsDai is YieldStakingBase {
+   }
+ 
+   function protocolClaimWithdraw(YieldStakeData storage sd) internal virtual override returns (uint256) {
+-    IYieldAccount yieldAccount = IYieldAccount(yieldAccounts[msg.sender]);
++    IYieldAccount yieldAccount = IYieldAccount(sd.yieldAccount);
+ 
+     uint256 claimedDai = dai.balanceOf(address(this));
+ 

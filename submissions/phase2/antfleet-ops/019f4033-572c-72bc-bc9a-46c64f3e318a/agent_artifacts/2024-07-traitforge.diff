@@ -1,0 +1,950 @@
+diff --git a/contracts/Airdrop/Airdrop.sol b/contracts/Airdrop/Airdrop.sol
+index 084c17e..28ca8e6 100644
+--- a/contracts/Airdrop/Airdrop.sol
++++ b/contracts/Airdrop/Airdrop.sol
+@@ -2,12 +2,15 @@
+ pragma solidity ^0.8.20;
+ 
+ import '@openzeppelin/contracts/token/ERC20/IERC20.sol';
++import '@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol';
+ import '@openzeppelin/contracts/access/Ownable.sol';
+ import '@openzeppelin/contracts/security/ReentrancyGuard.sol';
+ import '@openzeppelin/contracts/security/Pausable.sol';
+ import './IAirdrop.sol';
+ 
+ contract Airdrop is IAirdrop, Ownable, ReentrancyGuard, Pausable {
++  using SafeERC20 for IERC20;
++
+   bool private started;
+   bool private daoAllowed;
+ 
+@@ -26,7 +29,7 @@ contract Airdrop is IAirdrop, Ownable, ReentrancyGuard, Pausable {
+   ) external whenNotPaused nonReentrant onlyOwner {
+     require(!started, 'Already started');
+     require(amount > 0, 'Invalid amount');
+-    traitToken.transferFrom(tx.origin, address(this), amount);
++    traitToken.safeTransferFrom(tx.origin, address(this), amount);
+     started = true;
+     totalTokenAmount = amount;
+   }
+@@ -69,7 +72,15 @@ contract Airdrop is IAirdrop, Ownable, ReentrancyGuard, Pausable {
+     require(userInfo[msg.sender] > 0, 'Not eligible');
+ 
+     uint256 amount = (totalTokenAmount * userInfo[msg.sender]) / totalValue;
+-    traitToken.transfer(msg.sender, amount);
+     userInfo[msg.sender] = 0;
++    traitToken.safeTransfer(msg.sender, amount);
++  }
++
++  function pause() external onlyOwner {
++    _pause();
++  }
++
++  function unpause() external onlyOwner {
++    _unpause();
+   }
+ }
+diff --git a/contracts/Airdrop/IAirdrop.sol b/contracts/Airdrop/IAirdrop.sol
+index c820cd5..c3e3af8 100644
+--- a/contracts/Airdrop/IAirdrop.sol
++++ b/contracts/Airdrop/IAirdrop.sol
+@@ -17,4 +17,8 @@ interface IAirdrop {
+   function subUserAmount(address user, uint256 amount) external;
+ 
+   function claim() external;
++
++  function pause() external;
++
++  function unpause() external;
+ }
+diff --git a/contracts/DevFund/DevFund.sol b/contracts/DevFund/DevFund.sol
+index 671b578..9c2a806 100644
+--- a/contracts/DevFund/DevFund.sol
++++ b/contracts/DevFund/DevFund.sol
+@@ -58,6 +58,14 @@ contract DevFund is IDevFund, Ownable, ReentrancyGuard, Pausable {
+     emit RemoveDev(user);
+   }
+ 
++  function pause() external onlyOwner {
++    _pause();
++  }
++
++  function unpause() external onlyOwner {
++    _unpause();
++  }
++
+   function claim() external whenNotPaused nonReentrant {
+     DevInfo storage info = devInfo[msg.sender];
+ 
+@@ -66,12 +74,17 @@ contract DevFund is IDevFund, Ownable, ReentrancyGuard, Pausable {
+       info.weight;
+ 
+     if (pending > 0) {
+-      uint256 claimedAmount = safeRewardTransfer(msg.sender, pending);
++      uint256 rewardBalance = payable(address(this)).balance;
++      uint256 claimedAmount = pending > rewardBalance ? rewardBalance : pending;
+       info.pendingRewards = pending - claimedAmount;
++      info.rewardDebt = totalRewardDebt;
++      if (claimedAmount > 0) {
++        safeRewardTransfer(msg.sender, claimedAmount);
++      }
+       emit Claim(msg.sender, claimedAmount);
++    } else {
++      info.rewardDebt = totalRewardDebt;
+     }
+-
+-    info.rewardDebt = totalRewardDebt;
+   }
+ 
+   function pendingRewards(address user) external view returns (uint256) {
+diff --git a/contracts/DevFund/IDevFund.sol b/contracts/DevFund/IDevFund.sol
+index 74196e7..d65f818 100644
+--- a/contracts/DevFund/IDevFund.sol
++++ b/contracts/DevFund/IDevFund.sol
+@@ -23,4 +23,8 @@ interface IDevFund {
+   function claim() external;
+ 
+   function pendingRewards(address user) external view returns (uint256);
++
++  function pause() external;
++
++  function unpause() external;
+ }
+diff --git a/contracts/EntityForging/EntityForging.sol b/contracts/EntityForging/EntityForging.sol
+index c9ce23b..3b8bcb2 100644
+--- a/contracts/EntityForging/EntityForging.sol
++++ b/contracts/EntityForging/EntityForging.sol
+@@ -8,6 +8,8 @@ import './IEntityForging.sol';
+ import '../TraitForgeNft/ITraitForgeNft.sol';
+ 
+ contract EntityForging is IEntityForging, ReentrancyGuard, Ownable, Pausable {
++  uint256 private constant PERCENT_DENOMINATOR = 100;
++
+   ITraitForgeNft public nftContract;
+   address payable public nukeFundAddress;
+   uint256 public taxCut = 10;
+@@ -21,8 +23,10 @@ contract EntityForging is IEntityForging, ReentrancyGuard, Ownable, Pausable {
+   mapping(uint256 => Listing) public listings;
+   mapping(uint256 => uint8) public forgingCounts; // track forgePotential
+   mapping(uint256 => uint256) private lastForgeResetTimestamp;
++  mapping(bytes32 => bool) public forgedPairs;
+ 
+   constructor(address _traitForgeNft) {
++    require(_traitForgeNft != address(0), 'Invalid address');
+     nftContract = ITraitForgeNft(_traitForgeNft);
+   }
+ 
+@@ -30,10 +34,12 @@ contract EntityForging is IEntityForging, ReentrancyGuard, Ownable, Pausable {
+   function setNukeFundAddress(
+     address payable _nukeFundAddress
+   ) external onlyOwner {
++    require(_nukeFundAddress != address(0), 'Invalid address');
+     nukeFundAddress = _nukeFundAddress;
+   }
+ 
+   function setTaxCut(uint256 _taxCut) external onlyOwner {
++    require(_taxCut <= PERCENT_DENOMINATOR, 'Invalid tax cut');
+     taxCut = _taxCut;
+   }
+ 
+@@ -45,6 +51,14 @@ contract EntityForging is IEntityForging, ReentrancyGuard, Ownable, Pausable {
+     minimumListFee = _fee;
+   }
+ 
++  function pause() external onlyOwner {
++    _pause();
++  }
++
++  function unpause() external onlyOwner {
++    _unpause();
++  }
++
+   function fetchListings() external view returns (Listing[] memory _listings) {
+     _listings = new Listing[](listingCount + 1);
+     for (uint256 i = 1; i <= listingCount; ++i) {
+@@ -85,7 +99,7 @@ contract EntityForging is IEntityForging, ReentrancyGuard, Ownable, Pausable {
+     uint256 entropy = nftContract.getTokenEntropy(tokenId); // Retrieve entropy for tokenId
+     uint8 forgePotential = uint8((entropy / 10) % 10); // Extract the 5th digit from the entropy
+     require(
+-      forgePotential > 0 && forgingCounts[tokenId] <= forgePotential,
++      forgePotential > 0 && forgingCounts[tokenId] < forgePotential,
+       'Entity has reached its forging limit'
+     );
+ 
+@@ -104,10 +118,51 @@ contract EntityForging is IEntityForging, ReentrancyGuard, Ownable, Pausable {
+     uint256 mergerTokenId
+   ) external payable whenNotPaused nonReentrant returns (uint256) {
+     Listing memory _forgerListingInfo = listings[listedTokenIds[forgerTokenId]];
+-    require(
+-      _forgerListingInfo.isListed,
+-      "Forger's entity not listed for forging"
++    _validateForgeListing(_forgerListingInfo, forgerTokenId, mergerTokenId);
++
++    bytes32 pairKey = keccak256(abi.encodePacked(forgerTokenId, mergerTokenId));
++    require(!forgedPairs[pairKey], 'Pair already forged');
++
++    uint256 forgingFee = _forgerListingInfo.fee;
++    require(msg.value >= forgingFee, 'Insufficient fee for forging');
++
++    _consumeForgePotentials(forgerTokenId, mergerTokenId, pairKey);
++
++    uint256 newTokenId = nftContract.forge(
++      msg.sender,
++      forgerTokenId,
++      mergerTokenId,
++      ''
++    );
++    _distributeForgingFee(
++      forgingFee,
++      payable(nftContract.ownerOf(forgerTokenId))
+     );
++    _refundExcess(forgingFee);
++
++    // Cancel listed forger nft
++    _cancelListingForForging(forgerTokenId);
++
++    uint256 newEntropy = nftContract.getTokenEntropy(newTokenId);
++
++    emit EntityForged(
++      newTokenId,
++      forgerTokenId,
++      mergerTokenId,
++      newEntropy,
++      forgingFee
++    );
++
++    return newTokenId;
++  }
++
++  function _validateForgeListing(
++    Listing memory listing,
++    uint256 forgerTokenId,
++    uint256 mergerTokenId
++  ) private view {
++    require(listing.isListed, "Forger's entity not listed for forging");
++    require(listing.tokenId == forgerTokenId, 'Invalid listing');
+     require(
+       nftContract.ownerOf(mergerTokenId) == msg.sender,
+       'Caller must own the merger token'
+@@ -121,21 +176,32 @@ contract EntityForging is IEntityForging, ReentrancyGuard, Ownable, Pausable {
+         nftContract.getTokenGeneration(forgerTokenId),
+       'Invalid token generation'
+     );
++    require(
++      listing.account == nftContract.ownerOf(forgerTokenId),
++      'Listing owner changed'
++    );
++  }
+ 
+-    uint256 forgingFee = _forgerListingInfo.fee;
+-    require(msg.value >= forgingFee, 'Insufficient fee for forging');
+-
+-    _resetForgingCountIfNeeded(forgerTokenId); // Reset for forger if needed
+-    _resetForgingCountIfNeeded(mergerTokenId); // Reset for merger if needed
++  function _consumeForgePotentials(
++    uint256 forgerTokenId,
++    uint256 mergerTokenId,
++    bytes32 pairKey
++  ) private {
++    _resetForgingCountIfNeeded(forgerTokenId);
++    _resetForgingCountIfNeeded(mergerTokenId);
+ 
+-    // Check forger's breed count increment but do not check forge potential here
+-    // as it is already checked in listForForging for the forger
+     forgingCounts[forgerTokenId]++;
++    uint256 forgerEntropy = nftContract.getTokenEntropy(forgerTokenId);
++    uint8 forgerForgePotential = uint8((forgerEntropy / 10) % 10);
++    require(
++      forgerForgePotential > 0 &&
++        forgingCounts[forgerTokenId] <= forgerForgePotential,
++      'forger forgePotential insufficient'
++    );
+ 
+-    // Check and update for merger token's forge potential
+     uint256 mergerEntropy = nftContract.getTokenEntropy(mergerTokenId);
+     require(mergerEntropy % 3 != 0, 'Not merger');
+-    uint8 mergerForgePotential = uint8((mergerEntropy / 10) % 10); // Extract the 5th digit from the entropy
++    uint8 mergerForgePotential = uint8((mergerEntropy / 10) % 10);
+     forgingCounts[mergerTokenId]++;
+     require(
+       mergerForgePotential > 0 &&
+@@ -143,35 +209,29 @@ contract EntityForging is IEntityForging, ReentrancyGuard, Ownable, Pausable {
+       'forgePotential insufficient'
+     );
+ 
+-    uint256 devFee = forgingFee / taxCut;
++    forgedPairs[pairKey] = true;
++  }
++
++  function _distributeForgingFee(
++    uint256 forgingFee,
++    address payable forgerOwner
++  ) private {
++    require(nukeFundAddress != address(0), 'NukeFund address not set');
++    uint256 devFee = (forgingFee * taxCut) / PERCENT_DENOMINATOR;
+     uint256 forgerShare = forgingFee - devFee;
+-    address payable forgerOwner = payable(nftContract.ownerOf(forgerTokenId));
+ 
+-    uint256 newTokenId = nftContract.forge(
+-      msg.sender,
+-      forgerTokenId,
+-      mergerTokenId,
+-      ''
+-    );
+     (bool success, ) = nukeFundAddress.call{ value: devFee }('');
+     require(success, 'Failed to send to NukeFund');
+-    (bool success_forge, ) = forgerOwner.call{ value: forgerShare }('');
+-    require(success_forge, 'Failed to send to Forge Owner');
+-
+-    // Cancel listed forger nft
+-    _cancelListingForForging(forgerTokenId);
+-
+-    uint256 newEntropy = nftContract.getTokenEntropy(newTokenId);
+-
+-    emit EntityForged(
+-      newTokenId,
+-      forgerTokenId,
+-      mergerTokenId,
+-      newEntropy,
+-      forgingFee
+-    );
++    (bool successForge, ) = forgerOwner.call{ value: forgerShare }('');
++    require(successForge, 'Failed to send to Forge Owner');
++  }
+ 
+-    return newTokenId;
++  function _refundExcess(uint256 forgingFee) private {
++    uint256 excessPayment = msg.value - forgingFee;
++    if (excessPayment > 0) {
++      (bool refundSuccess, ) = msg.sender.call{ value: excessPayment }('');
++      require(refundSuccess, 'Refund failed');
++    }
+   }
+ 
+   function cancelListingForForging(
+@@ -192,6 +252,7 @@ contract EntityForging is IEntityForging, ReentrancyGuard, Ownable, Pausable {
+ 
+   function _cancelListingForForging(uint256 tokenId) internal {
+     delete listings[listedTokenIds[tokenId]];
++    delete listedTokenIds[tokenId];
+ 
+     emit CancelledListingForForging(tokenId); // Emitting with 0 fee to denote cancellation
+   }
+diff --git a/contracts/EntityForging/IEntityForging.sol b/contracts/EntityForging/IEntityForging.sol
+index eca91eb..cbd456c 100644
+--- a/contracts/EntityForging/IEntityForging.sol
++++ b/contracts/EntityForging/IEntityForging.sol
+@@ -28,6 +28,10 @@ interface IEntityForging {
+ 
+   function setMinimumListingFee(uint256 _fee) external;
+ 
++  function pause() external;
++
++  function unpause() external;
++
+   function listForForging(uint256 tokenId, uint256 fee) external;
+ 
+   function forgeWithListed(
+diff --git a/contracts/EntityTrading/EntityTrading.sol b/contracts/EntityTrading/EntityTrading.sol
+index 57a6b07..bf77bfc 100644
+--- a/contracts/EntityTrading/EntityTrading.sol
++++ b/contracts/EntityTrading/EntityTrading.sol
+@@ -9,6 +9,8 @@ import './IEntityTrading.sol';
+ import '../TraitForgeNft/ITraitForgeNft.sol';
+ 
+ contract EntityTrading is IEntityTrading, ReentrancyGuard, Ownable, Pausable {
++  uint256 private constant PERCENT_DENOMINATOR = 100;
++
+   ITraitForgeNft public nftContract;
+   address payable public nukeFundAddress;
+   uint256 public taxCut = 10;
+@@ -20,6 +22,7 @@ contract EntityTrading is IEntityTrading, ReentrancyGuard, Ownable, Pausable {
+   mapping(uint256 => Listing) public listings;
+ 
+   constructor(address _traitForgeNft) {
++    require(_traitForgeNft != address(0), 'Invalid address');
+     nftContract = ITraitForgeNft(_traitForgeNft);
+   }
+ 
+@@ -27,13 +30,23 @@ contract EntityTrading is IEntityTrading, ReentrancyGuard, Ownable, Pausable {
+   function setNukeFundAddress(
+     address payable _nukeFundAddress
+   ) external onlyOwner {
++    require(_nukeFundAddress != address(0), 'Invalid address');
+     nukeFundAddress = _nukeFundAddress;
+   }
+ 
+   function setTaxCut(uint256 _taxCut) external onlyOwner {
++    require(_taxCut <= PERCENT_DENOMINATOR, 'Invalid tax cut');
+     taxCut = _taxCut;
+   }
+ 
++  function pause() external onlyOwner {
++    _pause();
++  }
++
++  function unpause() external onlyOwner {
++    _unpause();
++  }
++
+   // function to lsit NFT for sale
+   function listNFTForSale(
+     uint256 tokenId,
+@@ -67,10 +80,16 @@ contract EntityTrading is IEntityTrading, ReentrancyGuard, Ownable, Pausable {
+       'ETH sent does not match the listing price'
+     );
+     require(listing.seller != address(0), 'NFT is not listed for sale.');
++    require(listing.isActive, 'Listing is not active.');
++    require(listing.tokenId == tokenId, 'Invalid listing.');
+ 
+     //transfer eth to seller (distribute to nukefund)
+-    uint256 nukeFundContribution = msg.value / taxCut;
++    uint256 nukeFundContribution = (msg.value * taxCut) /
++      PERCENT_DENOMINATOR;
+     uint256 sellerProceeds = msg.value - nukeFundContribution;
++    delete listings[listedTokenIds[tokenId]]; // remove listing
++    delete listedTokenIds[tokenId];
++
+     transferToNukeFund(nukeFundContribution); // transfer contribution to nukeFund
+ 
+     // transfer NFT from contract to buyer
+@@ -80,8 +99,6 @@ contract EntityTrading is IEntityTrading, ReentrancyGuard, Ownable, Pausable {
+     require(success, 'Failed to send to seller');
+     nftContract.transferFrom(address(this), msg.sender, tokenId); // transfer NFT to the buyer
+ 
+-    delete listings[listedTokenIds[tokenId]]; // remove listing
+-
+     emit NFTSold(
+       tokenId,
+       listing.seller,
+@@ -104,6 +121,7 @@ contract EntityTrading is IEntityTrading, ReentrancyGuard, Ownable, Pausable {
+     nftContract.transferFrom(address(this), msg.sender, tokenId); // transfer the nft back to seller
+ 
+     delete listings[listedTokenIds[tokenId]]; // mark the listing as inactive or delete it
++    delete listedTokenIds[tokenId];
+ 
+     emit ListingCanceled(tokenId, msg.sender);
+   }
+diff --git a/contracts/EntityTrading/IEntityTrading.sol b/contracts/EntityTrading/IEntityTrading.sol
+index 8a43853..c040946 100644
+--- a/contracts/EntityTrading/IEntityTrading.sol
++++ b/contracts/EntityTrading/IEntityTrading.sol
+@@ -28,6 +28,10 @@ interface IEntityTrading {
+ 
+   function setTaxCut(uint256 _taxCut) external;
+ 
++  function pause() external;
++
++  function unpause() external;
++
+   // function to lsit NFT for sale
+   function listNFTForSale(uint256 tokenId, uint256 price) external;
+ 
+diff --git a/contracts/EntropyGenerator/EntropyGenerator.sol b/contracts/EntropyGenerator/EntropyGenerator.sol
+index 3c10979..f8f250f 100644
+--- a/contracts/EntropyGenerator/EntropyGenerator.sol
++++ b/contracts/EntropyGenerator/EntropyGenerator.sol
+@@ -28,16 +28,26 @@ contract EntropyGenerator is IEntropyGenerator, Ownable, Pausable {
+   }
+ 
+   constructor(address _traitForgetNft) {
++    require(_traitForgetNft != address(0), 'Invalid address');
+     allowedCaller = _traitForgetNft;
+     initializeAlphaIndices();
+   }
+ 
+   // Function to update the allowed caller, restricted to the owner of the contract
+   function setAllowedCaller(address _allowedCaller) external onlyOwner {
++    require(_allowedCaller != address(0), 'Invalid address');
+     allowedCaller = _allowedCaller;
+     emit AllowedCallerUpdated(_allowedCaller); // Emit an event for this update.
+   }
+ 
++  function pause() external onlyOwner {
++    _pause();
++  }
++
++  function unpause() external onlyOwner {
++    _unpause();
++  }
++
+   // function to get the current allowed caller
+   function getAllowedCaller() external view returns (address) {
+     return allowedCaller;
+@@ -53,8 +63,7 @@ contract EntropyGenerator is IEntropyGenerator, Ownable, Pausable {
+         uint256 pseudoRandomValue = uint256(
+           keccak256(abi.encodePacked(block.number, i))
+         ) % uint256(10) ** 78; // generate a  pseudo-random value using block number and index
+-        require(pseudoRandomValue != 999999, 'Invalid value, retry.');
+-        entropySlots[i] = pseudoRandomValue; // store the value in the slots array
++        entropySlots[i] = _sanitizeEntropySlot(pseudoRandomValue, i); // store the value in the slots array
+       }
+     }
+     lastInitializedIndex = endIndex;
+@@ -73,8 +82,7 @@ contract EntropyGenerator is IEntropyGenerator, Ownable, Pausable {
+         uint256 pseudoRandomValue = uint256(
+           keccak256(abi.encodePacked(block.number, i))
+         ) % uint256(10) ** 78;
+-        require(pseudoRandomValue != 999999, 'Invalid value, retry.');
+-        entropySlots[i] = pseudoRandomValue;
++        entropySlots[i] = _sanitizeEntropySlot(pseudoRandomValue, i);
+       }
+     }
+     lastInitializedIndex = endIndex;
+@@ -91,7 +99,7 @@ contract EntropyGenerator is IEntropyGenerator, Ownable, Pausable {
+         uint256 pseudoRandomValue = uint256(
+           keccak256(abi.encodePacked(block.number, i))
+         ) % uint256(10) ** 78;
+-        entropySlots[i] = pseudoRandomValue;
++        entropySlots[i] = _sanitizeEntropySlot(pseudoRandomValue, i);
+       }
+     }
+     lastInitializedIndex = maxSlotIndex;
+@@ -99,7 +107,11 @@ contract EntropyGenerator is IEntropyGenerator, Ownable, Pausable {
+ 
+   // function to retrieve the next entropy value, accessible only by the allowed caller
+   function getNextEntropy() public onlyAllowedCaller returns (uint256) {
+-    require(currentSlotIndex <= maxSlotIndex, 'Max slot index reached.');
++    require(currentSlotIndex < maxSlotIndex, 'Max slot index reached.');
++    require(
++      currentSlotIndex < lastInitializedIndex,
++      'Entropy slot not initialized.'
++    );
+     uint256 entropy = getEntropy(currentSlotIndex, currentNumberIndex);
+ 
+     if (currentNumberIndex >= maxNumberIndex - 1) {
+@@ -165,7 +177,7 @@ contract EntropyGenerator is IEntropyGenerator, Ownable, Pausable {
+     uint256 slotIndex,
+     uint256 numberIndex
+   ) private view returns (uint256) {
+-    require(slotIndex <= maxSlotIndex, 'Slot index out of bounds.');
++    require(slotIndex < maxSlotIndex, 'Slot index out of bounds.');
+ 
+     if (
+       slotIndex == slotIndexSelectionPoint &&
+@@ -203,7 +215,15 @@ contract EntropyGenerator is IEntropyGenerator, Ownable, Pausable {
+   }
+ 
+   //select index points for 999999, triggered each gen-increment
+-  function initializeAlphaIndices() public whenNotPaused onlyOwner {
++  function initializeAlphaIndices() public whenNotPaused {
++    require(
++      msg.sender == owner() || msg.sender == allowedCaller,
++      'Caller is not allowed'
++    );
++    _initializeAlphaIndices();
++  }
++
++  function _initializeAlphaIndices() private {
+     uint256 hashValue = uint256(
+       keccak256(abi.encodePacked(blockhash(block.number - 1), block.timestamp))
+     );
+@@ -214,4 +234,28 @@ contract EntropyGenerator is IEntropyGenerator, Ownable, Pausable {
+     slotIndexSelectionPoint = slotIndexSelection;
+     numberIndexSelectionPoint = numberIndexSelection;
+   }
++
++  function _containsGoldenEntropy(uint256 slotValue) private view returns (bool) {
++    for (uint256 i = 0; i < maxNumberIndex; i++) {
++      uint256 position = i * 6;
++      uint256 entropy = (slotValue / (10 ** (72 - position))) % 1000000;
++      if (entropy == 999999) {
++        return true;
++      }
++    }
++    return false;
++  }
++
++  function _sanitizeEntropySlot(
++    uint256 slotValue,
++    uint256 slotIndex
++  ) private view returns (uint256) {
++    while (_containsGoldenEntropy(slotValue)) {
++      slotValue =
++        uint256(keccak256(abi.encodePacked(slotValue, slotIndex))) %
++        uint256(10) **
++        78;
++    }
++    return slotValue;
++  }
+ }
+diff --git a/contracts/EntropyGenerator/IEntropyGenerator.sol b/contracts/EntropyGenerator/IEntropyGenerator.sol
+index b12c36a..054c395 100644
+--- a/contracts/EntropyGenerator/IEntropyGenerator.sol
++++ b/contracts/EntropyGenerator/IEntropyGenerator.sol
+@@ -11,6 +11,10 @@ interface IEntropyGenerator {
+   // function to get the current allowed caller
+   function getAllowedCaller() external view returns (address);
+ 
++  function pause() external;
++
++  function unpause() external;
++
+   // Functions to initalize entropy values inbatches to spread gas cost over multiple transcations
+   function writeEntropyBatch1() external;
+ 
+diff --git a/contracts/NukeFund/INukeFund.sol b/contracts/NukeFund/INukeFund.sol
+index 75445f1..1abcde9 100644
+--- a/contracts/NukeFund/INukeFund.sol
++++ b/contracts/NukeFund/INukeFund.sol
+@@ -38,6 +38,10 @@ interface INukeFund {
+ 
+   function setDaoAddress(address payable account) external;
+ 
++  function pause() external;
++
++  function unpause() external;
++
+   // View function to see the current balance of the fund
+   function getFundBalance() external view returns (uint256);
+ 
+@@ -49,5 +53,9 @@ interface INukeFund {
+ 
+   function nuke(uint256 tokenId) external;
+ 
++  function nuke(uint256 tokenId, uint256 minClaimAmount) external;
++
++  function withdrawRemainingFund(address payable to) external;
++
+   function canTokenBeNuked(uint256 tokenId) external view returns (bool);
+ }
+diff --git a/contracts/NukeFund/NukeFund.sol b/contracts/NukeFund/NukeFund.sol
+index 953d7cf..3297f00 100644
+--- a/contracts/NukeFund/NukeFund.sol
++++ b/contracts/NukeFund/NukeFund.sol
+@@ -10,6 +10,7 @@ import '../Airdrop/IAirdrop.sol';
+ 
+ contract NukeFund is INukeFund, ReentrancyGuard, Ownable, Pausable {
+   uint256 public constant MAX_DENOMINATOR = 100000;
++  uint256 private constant PERCENT_DENOMINATOR = 100;
+ 
+   uint256 private fund;
+   ITraitForgeNft public nftContract;
+@@ -21,7 +22,7 @@ contract NukeFund is INukeFund, ReentrancyGuard, Ownable, Pausable {
+   uint256 public maxAllowedClaimDivisor = 2;
+   uint256 public nukeFactorMaxParam = MAX_DENOMINATOR / 2;
+   uint256 public minimumDaysHeld = 3 days;
+-  uint256 public ageMultiplier;
++  uint256 public ageMultiplier = 1;
+ 
+   // Constructor now properly passes the initial owner address to the Ownable constructor
+   constructor(
+@@ -30,6 +31,10 @@ contract NukeFund is INukeFund, ReentrancyGuard, Ownable, Pausable {
+     address payable _devAddress,
+     address payable _daoAddress
+   ) {
++    require(_traitForgeNft != address(0), 'Invalid address');
++    require(_airdrop != address(0), 'Invalid address');
++    require(_devAddress != address(0), 'Invalid address');
++    require(_daoAddress != address(0), 'Invalid address');
+     nftContract = ITraitForgeNft(_traitForgeNft);
+     airdropContract = IAirdrop(_airdrop);
+     devAddress = _devAddress; // Set the developer's address
+@@ -38,7 +43,7 @@ contract NukeFund is INukeFund, ReentrancyGuard, Ownable, Pausable {
+ 
+   // Fallback function to receive ETH and update fund balance
+   receive() external payable {
+-    uint256 devShare = msg.value / taxCut; // Calculate developer's share (10%)
++    uint256 devShare = (msg.value * taxCut) / PERCENT_DENOMINATOR; // Calculate developer's share
+     uint256 remainingFund = msg.value - devShare; // Calculate remaining funds to add to the fund
+ 
+     fund += remainingFund; // Update the fund balance
+@@ -61,6 +66,7 @@ contract NukeFund is INukeFund, ReentrancyGuard, Ownable, Pausable {
+   }
+ 
+   function setTaxCut(uint256 _taxCut) external onlyOwner {
++    require(_taxCut <= PERCENT_DENOMINATOR, 'Invalid tax cut');
+     taxCut = _taxCut;
+   }
+ 
+@@ -73,6 +79,7 @@ contract NukeFund is INukeFund, ReentrancyGuard, Ownable, Pausable {
+   }
+ 
+   function setMaxAllowedClaimDivisor(uint256 value) external onlyOwner {
++    require(value > 0, 'Invalid divisor');
+     maxAllowedClaimDivisor = value;
+   }
+ 
+@@ -82,21 +89,25 @@ contract NukeFund is INukeFund, ReentrancyGuard, Ownable, Pausable {
+ 
+   // Allow the owner to update the reference to the ERC721 contract
+   function setTraitForgeNftContract(address _traitForgeNft) external onlyOwner {
++    require(_traitForgeNft != address(0), 'Invalid address');
+     nftContract = ITraitForgeNft(_traitForgeNft);
+     emit TraitForgeNftAddressUpdated(_traitForgeNft); // Emit an event when the address is updated.
+   }
+ 
+   function setAirdropContract(address _airdrop) external onlyOwner {
++    require(_airdrop != address(0), 'Invalid address');
+     airdropContract = IAirdrop(_airdrop);
+     emit AirdropAddressUpdated(_airdrop); // Emit an event when the address is updated.
+   }
+ 
+   function setDevAddress(address payable account) external onlyOwner {
++    require(account != address(0), 'Invalid address');
+     devAddress = account;
+     emit DevAddressUpdated(account);
+   }
+ 
+   function setDaoAddress(address payable account) external onlyOwner {
++    require(account != address(0), 'Invalid address');
+     daoAddress = account;
+     emit DaoAddressUpdated(account);
+   }
+@@ -118,17 +129,14 @@ contract NukeFund is INukeFund, ReentrancyGuard, Ownable, Pausable {
+   function calculateAge(uint256 tokenId) public view returns (uint256) {
+     require(nftContract.ownerOf(tokenId) != address(0), 'Token does not exist');
+ 
+-    uint256 daysOld = (block.timestamp -
+-      nftContract.getTokenCreationTimestamp(tokenId)) /
+-      60 /
+-      60 /
+-      24;
++    uint256 secondsOld = block.timestamp -
++      nftContract.getTokenCreationTimestamp(tokenId);
+     uint256 perfomanceFactor = nftContract.getTokenEntropy(tokenId) % 10;
+ 
+-    uint256 age = (daysOld *
++    uint256 age = (secondsOld *
+       perfomanceFactor *
+       MAX_DENOMINATOR *
+-      ageMultiplier) / 365; // add 5 digits for decimals
++      ageMultiplier) / 365 days; // add 5 digits for decimals
+     return age;
+   }
+ 
+@@ -151,13 +159,22 @@ contract NukeFund is INukeFund, ReentrancyGuard, Ownable, Pausable {
+   }
+ 
+   function nuke(uint256 tokenId) public whenNotPaused nonReentrant {
++    _nuke(tokenId, 0);
++  }
++
++  function nuke(uint256 tokenId, uint256 minClaimAmount) public whenNotPaused nonReentrant {
++    _nuke(tokenId, minClaimAmount);
++  }
++
++  function _nuke(uint256 tokenId, uint256 minClaimAmount) private {
+     require(
+       nftContract.isApprovedOrOwner(msg.sender, tokenId),
+       'ERC721: caller is not token owner or approved'
+     );
++    address tokenOwner = nftContract.ownerOf(tokenId);
+     require(
+       nftContract.getApproved(tokenId) == address(this) ||
+-        nftContract.isApprovedForAll(msg.sender, address(this)),
++        nftContract.isApprovedForAll(tokenOwner, address(this)),
+       'Contract must be approved to transfer the NFT.'
+     );
+     require(canTokenBeNuked(tokenId), 'Token is not mature yet');
+@@ -167,9 +184,11 @@ contract NukeFund is INukeFund, ReentrancyGuard, Ownable, Pausable {
+     uint256 maxAllowedClaimAmount = fund / maxAllowedClaimDivisor; // Define a maximum allowed claim amount as 50% of the current fund size
+ 
+     // Directly assign the value to claimAmount based on the condition, removing the redeclaration
+-    uint256 claimAmount = finalNukeFactor > nukeFactorMaxParam
++    uint256 claimAmount = potentialClaimAmount > maxAllowedClaimAmount ||
++      finalNukeFactor > nukeFactorMaxParam
+       ? maxAllowedClaimAmount
+       : potentialClaimAmount;
++    require(claimAmount >= minClaimAmount, 'Claim amount below minimum');
+ 
+     fund -= claimAmount; // Deduct the claim amount from the fund
+ 
+@@ -181,6 +200,26 @@ contract NukeFund is INukeFund, ReentrancyGuard, Ownable, Pausable {
+     emit FundBalanceUpdated(fund); // Update the fund balance
+   }
+ 
++  function withdrawRemainingFund(address payable to) external onlyOwner nonReentrant {
++    require(to != address(0), 'Invalid address');
++    require(nftContract.totalSupply() == 0, 'Active NFTs remain');
++
++    uint256 amount = address(this).balance;
++    fund = 0;
++    (bool success, ) = to.call{ value: amount }('');
++    require(success, 'Failed to send Ether');
++
++    emit FundBalanceUpdated(fund);
++  }
++
++  function pause() external onlyOwner {
++    _pause();
++  }
++
++  function unpause() external onlyOwner {
++    _unpause();
++  }
++
+   function canTokenBeNuked(uint256 tokenId) public view returns (bool) {
+     // Ensure the token exists
+     require(
+diff --git a/contracts/TraitForgeNft/ITraitForgeNft.sol b/contracts/TraitForgeNft/ITraitForgeNft.sol
+index 9992289..d1b1b70 100644
+--- a/contracts/TraitForgeNft/ITraitForgeNft.sol
++++ b/contracts/TraitForgeNft/ITraitForgeNft.sol
+@@ -38,6 +38,12 @@ interface ITraitForgeNft is IERC721Enumerable {
+ 
+   function startAirdrop(uint256 amount) external;
+ 
++  function allowDaoFund() external;
++
++  function pause() external;
++
++  function unpause() external;
++
+   function isApprovedOrOwner(
+     address spender,
+     uint256 tokenId
+diff --git a/contracts/TraitForgeNft/TraitForgeNft.sol b/contracts/TraitForgeNft/TraitForgeNft.sol
+index a17de61..402af54 100644
+--- a/contracts/TraitForgeNft/TraitForgeNft.sol
++++ b/contracts/TraitForgeNft/TraitForgeNft.sol
+@@ -66,6 +66,7 @@ contract TraitForgeNft is
+   function setNukeFundContract(
+     address payable _nukeFundAddress
+   ) external onlyOwner {
++    require(_nukeFundAddress != address(0), 'Invalid address');
+     nukeFundAddress = _nukeFundAddress;
+     emit NukeFundContractUpdated(_nukeFundAddress); // Consider adding an event for this.
+   }
+@@ -97,6 +98,18 @@ contract TraitForgeNft is
+     airdropContract.startAirdrop(amount);
+   }
+ 
++  function allowDaoFund() external whenNotPaused onlyOwner {
++    airdropContract.allowDaoFund();
++  }
++
++  function pause() external onlyOwner {
++    _pause();
++  }
++
++  function unpause() external onlyOwner {
++    _unpause();
++  }
++
+   function setStartPrice(uint256 _startPrice) external onlyOwner {
+     startPrice = _startPrice;
+   }
+@@ -143,9 +156,13 @@ contract TraitForgeNft is
+       isApprovedOrOwner(msg.sender, tokenId),
+       'ERC721: caller is not token owner or approved'
+     );
++    address tokenOwner = ownerOf(tokenId);
+     if (!airdropContract.airdropStarted()) {
+-      uint256 entropy = getTokenEntropy(tokenId);
+-      airdropContract.subUserAmount(initialOwners[tokenId], entropy);
++      address initialOwner = initialOwners[tokenId];
++      if (tokenOwner == initialOwner) {
++        uint256 entropy = getTokenEntropy(tokenId);
++        airdropContract.subUserAmount(initialOwner, entropy);
++      }
+     }
+     _burn(tokenId);
+   }
+@@ -212,7 +229,10 @@ contract TraitForgeNft is
+     uint256 amountMinted = 0;
+     uint256 budgetLeft = msg.value;
+ 
+-    while (budgetLeft >= mintPrice && _tokenIds < maxTokensPerGen) {
++    while (
++      budgetLeft >= mintPrice &&
++      generationMintCounts[currentGeneration] < maxTokensPerGen
++    ) {
+       _mintInternal(msg.sender, mintPrice);
+       amountMinted++;
+       budgetLeft -= mintPrice;
+@@ -226,8 +246,10 @@ contract TraitForgeNft is
+ 
+   function calculateMintPrice() public view returns (uint256) {
+     uint256 currentGenMintCount = generationMintCounts[currentGeneration];
++    uint256 generationStartPrice = startPrice +
++      ((currentGeneration - 1) * priceIncrementByGen);
+     uint256 priceIncrease = priceIncrement * currentGenMintCount;
+-    uint256 price = startPrice + priceIncrease;
++    uint256 price = generationStartPrice + priceIncrease;
+     return price;
+   }
+ 
+@@ -278,21 +300,31 @@ contract TraitForgeNft is
+   }
+ 
+   function _mintInternal(address to, uint256 mintPrice) internal {
+-    if (generationMintCounts[currentGeneration] >= maxTokensPerGen) {
+-      _incrementGeneration();
+-    }
++    require(
++      generationMintCounts[currentGeneration] < maxTokensPerGen,
++      'Exceeds maxTokensPerGen'
++    );
+ 
+     _tokenIds++;
+     uint256 newItemId = _tokenIds;
++    uint256 mintGeneration = currentGeneration;
+     _mint(to, newItemId);
+     uint256 entropyValue = entropyGenerator.getNextEntropy();
+ 
+     tokenCreationTimestamps[newItemId] = block.timestamp;
+     tokenEntropy[newItemId] = entropyValue;
+-    tokenGenerations[newItemId] = currentGeneration;
+-    generationMintCounts[currentGeneration]++;
++    tokenGenerations[newItemId] = mintGeneration;
++    generationMintCounts[mintGeneration]++;
+     initialOwners[newItemId] = to;
+ 
++    if (
++      generationMintCounts[mintGeneration] >= maxTokensPerGen &&
++      mintGeneration == currentGeneration &&
++      currentGeneration < maxGeneration
++    ) {
++      _incrementGeneration();
++    }
++
+     if (!airdropContract.airdropStarted()) {
+       airdropContract.addUserAmount(to, entropyValue);
+     }
+@@ -300,7 +332,7 @@ contract TraitForgeNft is
+     emit Minted(
+       msg.sender,
+       newItemId,
+-      currentGeneration,
++      mintGeneration,
+       entropyValue,
+       mintPrice
+     );
+@@ -313,6 +345,7 @@ contract TraitForgeNft is
+     uint256 entropy,
+     uint256 gen
+   ) private returns (uint256) {
++    require(gen <= maxGeneration, "can't be over max generation");
+     require(
+       generationMintCounts[gen] < maxTokensPerGen,
+       'Exceeds maxTokensPerGen'
+@@ -329,7 +362,9 @@ contract TraitForgeNft is
+     initialOwners[newTokenId] = newOwner;
+ 
+     if (
+-      generationMintCounts[gen] >= maxTokensPerGen && gen == currentGeneration
++      generationMintCounts[gen] >= maxTokensPerGen &&
++      gen == currentGeneration &&
++      currentGeneration < maxGeneration
+     ) {
+       _incrementGeneration();
+     }
+@@ -347,8 +382,8 @@ contract TraitForgeNft is
+       generationMintCounts[currentGeneration] >= maxTokensPerGen,
+       'Generation limit not yet reached'
+     );
++    require(currentGeneration < maxGeneration, 'Maximum generation reached');
+     currentGeneration++;
+-    generationMintCounts[currentGeneration] = 0;
+     priceIncrement = priceIncrement + priceIncrementByGen;
+     entropyGenerator.initializeAlphaIndices();
+     emit GenerationIncremented(currentGeneration);
+@@ -356,6 +391,7 @@ contract TraitForgeNft is
+ 
+   // distributes funds to nukeFund contract, where its then distrubted 10% dev 90% nukeFund
+   function _distributeFunds(uint256 totalAmount) private {
++    require(nukeFundAddress != address(0), 'NukeFund address not set');
+     require(address(this).balance >= totalAmount, 'Insufficient balance');
+ 
+     (bool success, ) = nukeFundAddress.call{ value: totalAmount }('');

@@ -1,0 +1,1562 @@
+diff --git a/tokenomics/audits/internal/analysis/contracts/Treasury-flatten.sol b/tokenomics/audits/internal/analysis/contracts/Treasury-flatten.sol
+index 30508d0..ded42d1 100644
+--- a/tokenomics/audits/internal/analysis/contracts/Treasury-flatten.sol
++++ b/tokenomics/audits/internal/analysis/contracts/Treasury-flatten.sol
+@@ -566,19 +566,30 @@ contract Treasury is GenericTokenomics {
+             revert UnauthorizedToken(token);
+         }
+ 
+-        uint256 reserves = tokenInfo.reserves + tokenAmount;
+-        tokenInfo.reserves = uint224(reserves);
+-
+         // Uniswap allowance implementation does not revert with the accurate message, check before the transfer is engaged
+         if (IERC20(token).allowance(account, address(this)) < tokenAmount) {
+             revert InsufficientAllowance(IERC20(token).allowance((account), address(this)), tokenAmount);
+         }
+ 
++        uint256 balanceBefore = IERC20(token).balanceOf(address(this));
++
+         // Transfer tokens from account to treasury and add to the token treasury reserves
+         // We assume that LP tokens enabled in the protocol are safe as they are enabled via governance
+         // UniswapV2ERC20 realization has a standard transferFrom() function that returns a boolean value
+         IERC20(token).transferFrom(account, address(this), tokenAmount);
+ 
++        uint256 balanceAfter = IERC20(token).balanceOf(address(this));
++        uint256 receivedAmount;
++        if (balanceAfter > balanceBefore) {
++            receivedAmount = balanceAfter - balanceBefore;
++        }
++        if (receivedAmount != tokenAmount) {
++            revert WrongAmount(receivedAmount, tokenAmount);
++        }
++
++        uint256 reserves = tokenInfo.reserves + receivedAmount;
++        tokenInfo.reserves = uint224(reserves);
++
+         // Mint specified number of OLAS tokens corresponding to tokens bonding deposit
+         // The olasMintAmount is guaranteed by the product supply limit, which is limited by the effectiveBond
+         IOLAS(olas).mint(msg.sender, olasMintAmount);
+@@ -828,4 +839,3 @@ contract Treasury is GenericTokenomics {
+ }
+ 
+ 
+-
+diff --git a/tokenomics/audits/internal4/analysis/contracts/ArbitrumTargetDispenserL2-flatten.sol b/tokenomics/audits/internal4/analysis/contracts/ArbitrumTargetDispenserL2-flatten.sol
+index 31292d8..76a0c61 100644
+--- a/tokenomics/audits/internal4/analysis/contracts/ArbitrumTargetDispenserL2-flatten.sol
++++ b/tokenomics/audits/internal4/analysis/contracts/ArbitrumTargetDispenserL2-flatten.sol
+@@ -217,15 +217,7 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             address target = targets[i];
+             uint256 amount = amounts[i];
+ 
+-            // Check the target validity address and staking parameters
+-            // This is a low level call since it must never revert
+-            (bool success, bytes memory returnData) = stakingFactory.call(abi.encodeWithSelector(
+-                IStakingFactory.verifyInstance.selector, target));
+-
+-            // If the function call was successful, check the return value
+-            if (success) {
+-                success = abi.decode(returnData, (bool));
+-            }
++            bool success = _verifyStakingTarget(target);
+ 
+             // If verification failed, withhold OLAS amount and continue
+             if (!success) {
+@@ -237,8 +229,8 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+                 continue;
+             }
+ 
+-            // Check the OLAS balance and the contract being unpaused
+-            if (IToken(olas).balanceOf(address(this)) >= amount && localPaused == 1) {
++            // Check the OLAS balance that is not reserved as unsynced withheld funds and the contract being unpaused
++            if (_getAvailableOlasBalance(withheldAmount + localWithheldAmount) >= amount && localPaused == 1) {
+                 // Approve and transfer OLAS to the service staking target
+                 IToken(olas).approve(target, amount);
+                 IStaking(target).deposit(amount);
+@@ -262,6 +254,33 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+         }
+     }
+ 
++    /// @dev Verifies staking target, returning false on any verification failure.
++    /// @param target Staking target address.
++    /// @return success True if the staking target is verified.
++    function _verifyStakingTarget(address target) internal returns (bool success) {
++        // Check the target validity address and staking parameters
++        // This is a low level call since it must never revert
++        bytes memory verifyData = abi.encodeWithSelector(IStakingFactory.verifyInstance.selector, target);
++        (success, verifyData) = stakingFactory.call(verifyData);
++
++        // If the function call was successful, check the return value
++        if (success && verifyData.length == 32) {
++            success = abi.decode(verifyData, (bool));
++        } else {
++            success = false;
++        }
++    }
++
++    /// @dev Gets OLAS balance available for staking deposits after reserving unsynced withheld funds.
++    /// @param reservedAmount OLAS amount that must not be spent on deposits.
++    /// @return availableBalance OLAS amount available for staking deposits.
++    function _getAvailableOlasBalance(uint256 reservedAmount) internal view returns (uint256 availableBalance) {
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance > reservedAmount) {
++            availableBalance = olasBalance - reservedAmount;
++        }
++    }
++
+     /// @dev Sends message to L1 to sync the withheld amount.
+     /// @param amount Amount to sync.
+     /// @param bridgePayload Payload data for the bridge relayer.
+@@ -329,8 +348,24 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert TargetAmountNotQueued(target, amount, batchNonce);
+         }
+ 
+-        // Get the current contract OLAS balance
+-        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        // If the target became invalid, withhold OLAS for further usage and remove the queued request
++        if (!_verifyStakingTarget(target)) {
++            uint256 availableBalance = _getAvailableOlasBalance(withheldAmount);
++            if (availableBalance < amount) {
++                revert InsufficientBalance(availableBalance, amount);
++            }
++
++            withheldAmount += amount;
++            stakingQueueingNonces[queueHash] = false;
++
++            emit StakingAmountWithheld(target, amount);
++
++            _locked = 1;
++            return;
++        }
++
++        // Get the current contract OLAS balance that is not reserved as unsynced withheld funds
++        uint256 olasBalance = _getAvailableOlasBalance(withheldAmount);
+         if (olasBalance >= amount) {
+             // Approve and transfer OLAS to the service staking target
+             IToken(olas).approve(target, amount);
+@@ -384,6 +419,12 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert ZeroValue();
+         }
+ 
++        // The withheld amount must be backed by actual OLAS before it is credited on L1
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance < amount) {
++            revert InsufficientBalance(olasBalance, amount);
++        }
++
+         // Zero the withheld amount
+         withheldAmount = 0;
+ 
+diff --git a/tokenomics/audits/internal4/analysis/contracts/DefaultTargetDispenserL2-flatten.sol b/tokenomics/audits/internal4/analysis/contracts/DefaultTargetDispenserL2-flatten.sol
+index 71c0448..8fdf52f 100644
+--- a/tokenomics/audits/internal4/analysis/contracts/DefaultTargetDispenserL2-flatten.sol
++++ b/tokenomics/audits/internal4/analysis/contracts/DefaultTargetDispenserL2-flatten.sol
+@@ -219,15 +219,7 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             address target = targets[i];
+             uint256 amount = amounts[i];
+ 
+-            // Check the target validity address and staking parameters
+-            // This is a low level call since it must never revert
+-            (bool success, bytes memory returnData) = stakingFactory.call(abi.encodeWithSelector(
+-                IStakingFactory.verifyInstance.selector, target));
+-
+-            // If the function call was successful, check the return value
+-            if (success) {
+-                success = abi.decode(returnData, (bool));
+-            }
++            bool success = _verifyStakingTarget(target);
+ 
+             // If verification failed, withhold OLAS amount and continue
+             if (!success) {
+@@ -239,8 +231,8 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+                 continue;
+             }
+ 
+-            // Check the OLAS balance and the contract being unpaused
+-            if (IToken(olas).balanceOf(address(this)) >= amount && localPaused == 1) {
++            // Check the OLAS balance that is not reserved as unsynced withheld funds and the contract being unpaused
++            if (_getAvailableOlasBalance(withheldAmount + localWithheldAmount) >= amount && localPaused == 1) {
+                 // Approve and transfer OLAS to the service staking target
+                 IToken(olas).approve(target, amount);
+                 IStaking(target).deposit(amount);
+@@ -264,6 +256,33 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+         }
+     }
+ 
++    /// @dev Verifies staking target, returning false on any verification failure.
++    /// @param target Staking target address.
++    /// @return success True if the staking target is verified.
++    function _verifyStakingTarget(address target) internal returns (bool success) {
++        // Check the target validity address and staking parameters
++        // This is a low level call since it must never revert
++        bytes memory verifyData = abi.encodeWithSelector(IStakingFactory.verifyInstance.selector, target);
++        (success, verifyData) = stakingFactory.call(verifyData);
++
++        // If the function call was successful, check the return value
++        if (success && verifyData.length == 32) {
++            success = abi.decode(verifyData, (bool));
++        } else {
++            success = false;
++        }
++    }
++
++    /// @dev Gets OLAS balance available for staking deposits after reserving unsynced withheld funds.
++    /// @param reservedAmount OLAS amount that must not be spent on deposits.
++    /// @return availableBalance OLAS amount available for staking deposits.
++    function _getAvailableOlasBalance(uint256 reservedAmount) internal view returns (uint256 availableBalance) {
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance > reservedAmount) {
++            availableBalance = olasBalance - reservedAmount;
++        }
++    }
++
+     /// @dev Sends message to L1 to sync the withheld amount.
+     /// @param amount Amount to sync.
+     /// @param bridgePayload Payload data for the bridge relayer.
+@@ -331,8 +350,24 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert TargetAmountNotQueued(target, amount, batchNonce);
+         }
+ 
+-        // Get the current contract OLAS balance
+-        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        // If the target became invalid, withhold OLAS for further usage and remove the queued request
++        if (!_verifyStakingTarget(target)) {
++            uint256 availableBalance = _getAvailableOlasBalance(withheldAmount);
++            if (availableBalance < amount) {
++                revert InsufficientBalance(availableBalance, amount);
++            }
++
++            withheldAmount += amount;
++            stakingQueueingNonces[queueHash] = false;
++
++            emit StakingAmountWithheld(target, amount);
++
++            _locked = 1;
++            return;
++        }
++
++        // Get the current contract OLAS balance that is not reserved as unsynced withheld funds
++        uint256 olasBalance = _getAvailableOlasBalance(withheldAmount);
+         if (olasBalance >= amount) {
+             // Approve and transfer OLAS to the service staking target
+             IToken(olas).approve(target, amount);
+@@ -386,6 +421,12 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert ZeroValue();
+         }
+ 
++        // The withheld amount must be backed by actual OLAS before it is credited on L1
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance < amount) {
++            revert InsufficientBalance(olasBalance, amount);
++        }
++
+         // Zero the withheld amount
+         withheldAmount = 0;
+ 
+diff --git a/tokenomics/audits/internal4/analysis/contracts/GnosisTargetDispenserL2-flatten.sol b/tokenomics/audits/internal4/analysis/contracts/GnosisTargetDispenserL2-flatten.sol
+index e75418f..411da60 100644
+--- a/tokenomics/audits/internal4/analysis/contracts/GnosisTargetDispenserL2-flatten.sol
++++ b/tokenomics/audits/internal4/analysis/contracts/GnosisTargetDispenserL2-flatten.sol
+@@ -219,15 +219,7 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             address target = targets[i];
+             uint256 amount = amounts[i];
+ 
+-            // Check the target validity address and staking parameters
+-            // This is a low level call since it must never revert
+-            (bool success, bytes memory returnData) = stakingFactory.call(abi.encodeWithSelector(
+-                IStakingFactory.verifyInstance.selector, target));
+-
+-            // If the function call was successful, check the return value
+-            if (success) {
+-                success = abi.decode(returnData, (bool));
+-            }
++            bool success = _verifyStakingTarget(target);
+ 
+             // If verification failed, withhold OLAS amount and continue
+             if (!success) {
+@@ -239,8 +231,8 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+                 continue;
+             }
+ 
+-            // Check the OLAS balance and the contract being unpaused
+-            if (IToken(olas).balanceOf(address(this)) >= amount && localPaused == 1) {
++            // Check the OLAS balance that is not reserved as unsynced withheld funds and the contract being unpaused
++            if (_getAvailableOlasBalance(withheldAmount + localWithheldAmount) >= amount && localPaused == 1) {
+                 // Approve and transfer OLAS to the service staking target
+                 IToken(olas).approve(target, amount);
+                 IStaking(target).deposit(amount);
+@@ -264,6 +256,33 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+         }
+     }
+ 
++    /// @dev Verifies staking target, returning false on any verification failure.
++    /// @param target Staking target address.
++    /// @return success True if the staking target is verified.
++    function _verifyStakingTarget(address target) internal returns (bool success) {
++        // Check the target validity address and staking parameters
++        // This is a low level call since it must never revert
++        bytes memory verifyData = abi.encodeWithSelector(IStakingFactory.verifyInstance.selector, target);
++        (success, verifyData) = stakingFactory.call(verifyData);
++
++        // If the function call was successful, check the return value
++        if (success && verifyData.length == 32) {
++            success = abi.decode(verifyData, (bool));
++        } else {
++            success = false;
++        }
++    }
++
++    /// @dev Gets OLAS balance available for staking deposits after reserving unsynced withheld funds.
++    /// @param reservedAmount OLAS amount that must not be spent on deposits.
++    /// @return availableBalance OLAS amount available for staking deposits.
++    function _getAvailableOlasBalance(uint256 reservedAmount) internal view returns (uint256 availableBalance) {
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance > reservedAmount) {
++            availableBalance = olasBalance - reservedAmount;
++        }
++    }
++
+     /// @dev Sends message to L1 to sync the withheld amount.
+     /// @param amount Amount to sync.
+     /// @param bridgePayload Payload data for the bridge relayer.
+@@ -331,8 +350,24 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert TargetAmountNotQueued(target, amount, batchNonce);
+         }
+ 
+-        // Get the current contract OLAS balance
+-        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        // If the target became invalid, withhold OLAS for further usage and remove the queued request
++        if (!_verifyStakingTarget(target)) {
++            uint256 availableBalance = _getAvailableOlasBalance(withheldAmount);
++            if (availableBalance < amount) {
++                revert InsufficientBalance(availableBalance, amount);
++            }
++
++            withheldAmount += amount;
++            stakingQueueingNonces[queueHash] = false;
++
++            emit StakingAmountWithheld(target, amount);
++
++            _locked = 1;
++            return;
++        }
++
++        // Get the current contract OLAS balance that is not reserved as unsynced withheld funds
++        uint256 olasBalance = _getAvailableOlasBalance(withheldAmount);
+         if (olasBalance >= amount) {
+             // Approve and transfer OLAS to the service staking target
+             IToken(olas).approve(target, amount);
+@@ -386,6 +421,12 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert ZeroValue();
+         }
+ 
++        // The withheld amount must be backed by actual OLAS before it is credited on L1
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance < amount) {
++            revert InsufficientBalance(olasBalance, amount);
++        }
++
+         // Zero the withheld amount
+         withheldAmount = 0;
+ 
+diff --git a/tokenomics/audits/internal4/analysis/contracts/OptimismTargetDispenserL2-flatten.sol b/tokenomics/audits/internal4/analysis/contracts/OptimismTargetDispenserL2-flatten.sol
+index d4f730b..67104f0 100644
+--- a/tokenomics/audits/internal4/analysis/contracts/OptimismTargetDispenserL2-flatten.sol
++++ b/tokenomics/audits/internal4/analysis/contracts/OptimismTargetDispenserL2-flatten.sol
+@@ -219,15 +219,7 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             address target = targets[i];
+             uint256 amount = amounts[i];
+ 
+-            // Check the target validity address and staking parameters
+-            // This is a low level call since it must never revert
+-            (bool success, bytes memory returnData) = stakingFactory.call(abi.encodeWithSelector(
+-                IStakingFactory.verifyInstance.selector, target));
+-
+-            // If the function call was successful, check the return value
+-            if (success) {
+-                success = abi.decode(returnData, (bool));
+-            }
++            bool success = _verifyStakingTarget(target);
+ 
+             // If verification failed, withhold OLAS amount and continue
+             if (!success) {
+@@ -239,8 +231,8 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+                 continue;
+             }
+ 
+-            // Check the OLAS balance and the contract being unpaused
+-            if (IToken(olas).balanceOf(address(this)) >= amount && localPaused == 1) {
++            // Check the OLAS balance that is not reserved as unsynced withheld funds and the contract being unpaused
++            if (_getAvailableOlasBalance(withheldAmount + localWithheldAmount) >= amount && localPaused == 1) {
+                 // Approve and transfer OLAS to the service staking target
+                 IToken(olas).approve(target, amount);
+                 IStaking(target).deposit(amount);
+@@ -264,6 +256,33 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+         }
+     }
+ 
++    /// @dev Verifies staking target, returning false on any verification failure.
++    /// @param target Staking target address.
++    /// @return success True if the staking target is verified.
++    function _verifyStakingTarget(address target) internal returns (bool success) {
++        // Check the target validity address and staking parameters
++        // This is a low level call since it must never revert
++        bytes memory verifyData = abi.encodeWithSelector(IStakingFactory.verifyInstance.selector, target);
++        (success, verifyData) = stakingFactory.call(verifyData);
++
++        // If the function call was successful, check the return value
++        if (success && verifyData.length == 32) {
++            success = abi.decode(verifyData, (bool));
++        } else {
++            success = false;
++        }
++    }
++
++    /// @dev Gets OLAS balance available for staking deposits after reserving unsynced withheld funds.
++    /// @param reservedAmount OLAS amount that must not be spent on deposits.
++    /// @return availableBalance OLAS amount available for staking deposits.
++    function _getAvailableOlasBalance(uint256 reservedAmount) internal view returns (uint256 availableBalance) {
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance > reservedAmount) {
++            availableBalance = olasBalance - reservedAmount;
++        }
++    }
++
+     /// @dev Sends message to L1 to sync the withheld amount.
+     /// @param amount Amount to sync.
+     /// @param bridgePayload Payload data for the bridge relayer.
+@@ -331,8 +350,24 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert TargetAmountNotQueued(target, amount, batchNonce);
+         }
+ 
+-        // Get the current contract OLAS balance
+-        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        // If the target became invalid, withhold OLAS for further usage and remove the queued request
++        if (!_verifyStakingTarget(target)) {
++            uint256 availableBalance = _getAvailableOlasBalance(withheldAmount);
++            if (availableBalance < amount) {
++                revert InsufficientBalance(availableBalance, amount);
++            }
++
++            withheldAmount += amount;
++            stakingQueueingNonces[queueHash] = false;
++
++            emit StakingAmountWithheld(target, amount);
++
++            _locked = 1;
++            return;
++        }
++
++        // Get the current contract OLAS balance that is not reserved as unsynced withheld funds
++        uint256 olasBalance = _getAvailableOlasBalance(withheldAmount);
+         if (olasBalance >= amount) {
+             // Approve and transfer OLAS to the service staking target
+             IToken(olas).approve(target, amount);
+@@ -386,6 +421,12 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert ZeroValue();
+         }
+ 
++        // The withheld amount must be backed by actual OLAS before it is credited on L1
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance < amount) {
++            revert InsufficientBalance(olasBalance, amount);
++        }
++
+         // Zero the withheld amount
+         withheldAmount = 0;
+ 
+diff --git a/tokenomics/audits/internal4/analysis/contracts/PolygonTargetDispenserL2-flatten.sol b/tokenomics/audits/internal4/analysis/contracts/PolygonTargetDispenserL2-flatten.sol
+index 2def66d..308aa5f 100644
+--- a/tokenomics/audits/internal4/analysis/contracts/PolygonTargetDispenserL2-flatten.sol
++++ b/tokenomics/audits/internal4/analysis/contracts/PolygonTargetDispenserL2-flatten.sol
+@@ -219,15 +219,7 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             address target = targets[i];
+             uint256 amount = amounts[i];
+ 
+-            // Check the target validity address and staking parameters
+-            // This is a low level call since it must never revert
+-            (bool success, bytes memory returnData) = stakingFactory.call(abi.encodeWithSelector(
+-                IStakingFactory.verifyInstance.selector, target));
+-
+-            // If the function call was successful, check the return value
+-            if (success) {
+-                success = abi.decode(returnData, (bool));
+-            }
++            bool success = _verifyStakingTarget(target);
+ 
+             // If verification failed, withhold OLAS amount and continue
+             if (!success) {
+@@ -239,8 +231,8 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+                 continue;
+             }
+ 
+-            // Check the OLAS balance and the contract being unpaused
+-            if (IToken(olas).balanceOf(address(this)) >= amount && localPaused == 1) {
++            // Check the OLAS balance that is not reserved as unsynced withheld funds and the contract being unpaused
++            if (_getAvailableOlasBalance(withheldAmount + localWithheldAmount) >= amount && localPaused == 1) {
+                 // Approve and transfer OLAS to the service staking target
+                 IToken(olas).approve(target, amount);
+                 IStaking(target).deposit(amount);
+@@ -264,6 +256,33 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+         }
+     }
+ 
++    /// @dev Verifies staking target, returning false on any verification failure.
++    /// @param target Staking target address.
++    /// @return success True if the staking target is verified.
++    function _verifyStakingTarget(address target) internal returns (bool success) {
++        // Check the target validity address and staking parameters
++        // This is a low level call since it must never revert
++        bytes memory verifyData = abi.encodeWithSelector(IStakingFactory.verifyInstance.selector, target);
++        (success, verifyData) = stakingFactory.call(verifyData);
++
++        // If the function call was successful, check the return value
++        if (success && verifyData.length == 32) {
++            success = abi.decode(verifyData, (bool));
++        } else {
++            success = false;
++        }
++    }
++
++    /// @dev Gets OLAS balance available for staking deposits after reserving unsynced withheld funds.
++    /// @param reservedAmount OLAS amount that must not be spent on deposits.
++    /// @return availableBalance OLAS amount available for staking deposits.
++    function _getAvailableOlasBalance(uint256 reservedAmount) internal view returns (uint256 availableBalance) {
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance > reservedAmount) {
++            availableBalance = olasBalance - reservedAmount;
++        }
++    }
++
+     /// @dev Sends message to L1 to sync the withheld amount.
+     /// @param amount Amount to sync.
+     /// @param bridgePayload Payload data for the bridge relayer.
+@@ -331,8 +350,24 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert TargetAmountNotQueued(target, amount, batchNonce);
+         }
+ 
+-        // Get the current contract OLAS balance
+-        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        // If the target became invalid, withhold OLAS for further usage and remove the queued request
++        if (!_verifyStakingTarget(target)) {
++            uint256 availableBalance = _getAvailableOlasBalance(withheldAmount);
++            if (availableBalance < amount) {
++                revert InsufficientBalance(availableBalance, amount);
++            }
++
++            withheldAmount += amount;
++            stakingQueueingNonces[queueHash] = false;
++
++            emit StakingAmountWithheld(target, amount);
++
++            _locked = 1;
++            return;
++        }
++
++        // Get the current contract OLAS balance that is not reserved as unsynced withheld funds
++        uint256 olasBalance = _getAvailableOlasBalance(withheldAmount);
+         if (olasBalance >= amount) {
+             // Approve and transfer OLAS to the service staking target
+             IToken(olas).approve(target, amount);
+@@ -386,6 +421,12 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert ZeroValue();
+         }
+ 
++        // The withheld amount must be backed by actual OLAS before it is credited on L1
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance < amount) {
++            revert InsufficientBalance(olasBalance, amount);
++        }
++
+         // Zero the withheld amount
+         withheldAmount = 0;
+ 
+diff --git a/tokenomics/audits/internal4/analysis/contracts/WormholeTargetDispenserL2-flatten.sol b/tokenomics/audits/internal4/analysis/contracts/WormholeTargetDispenserL2-flatten.sol
+index db244d5..6221966 100644
+--- a/tokenomics/audits/internal4/analysis/contracts/WormholeTargetDispenserL2-flatten.sol
++++ b/tokenomics/audits/internal4/analysis/contracts/WormholeTargetDispenserL2-flatten.sol
+@@ -219,15 +219,7 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             address target = targets[i];
+             uint256 amount = amounts[i];
+ 
+-            // Check the target validity address and staking parameters
+-            // This is a low level call since it must never revert
+-            (bool success, bytes memory returnData) = stakingFactory.call(abi.encodeWithSelector(
+-                IStakingFactory.verifyInstance.selector, target));
+-
+-            // If the function call was successful, check the return value
+-            if (success) {
+-                success = abi.decode(returnData, (bool));
+-            }
++            bool success = _verifyStakingTarget(target);
+ 
+             // If verification failed, withhold OLAS amount and continue
+             if (!success) {
+@@ -239,8 +231,8 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+                 continue;
+             }
+ 
+-            // Check the OLAS balance and the contract being unpaused
+-            if (IToken(olas).balanceOf(address(this)) >= amount && localPaused == 1) {
++            // Check the OLAS balance that is not reserved as unsynced withheld funds and the contract being unpaused
++            if (_getAvailableOlasBalance(withheldAmount + localWithheldAmount) >= amount && localPaused == 1) {
+                 // Approve and transfer OLAS to the service staking target
+                 IToken(olas).approve(target, amount);
+                 IStaking(target).deposit(amount);
+@@ -264,6 +256,33 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+         }
+     }
+ 
++    /// @dev Verifies staking target, returning false on any verification failure.
++    /// @param target Staking target address.
++    /// @return success True if the staking target is verified.
++    function _verifyStakingTarget(address target) internal returns (bool success) {
++        // Check the target validity address and staking parameters
++        // This is a low level call since it must never revert
++        bytes memory verifyData = abi.encodeWithSelector(IStakingFactory.verifyInstance.selector, target);
++        (success, verifyData) = stakingFactory.call(verifyData);
++
++        // If the function call was successful, check the return value
++        if (success && verifyData.length == 32) {
++            success = abi.decode(verifyData, (bool));
++        } else {
++            success = false;
++        }
++    }
++
++    /// @dev Gets OLAS balance available for staking deposits after reserving unsynced withheld funds.
++    /// @param reservedAmount OLAS amount that must not be spent on deposits.
++    /// @return availableBalance OLAS amount available for staking deposits.
++    function _getAvailableOlasBalance(uint256 reservedAmount) internal view returns (uint256 availableBalance) {
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance > reservedAmount) {
++            availableBalance = olasBalance - reservedAmount;
++        }
++    }
++
+     /// @dev Sends message to L1 to sync the withheld amount.
+     /// @param amount Amount to sync.
+     /// @param bridgePayload Payload data for the bridge relayer.
+@@ -331,8 +350,24 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert TargetAmountNotQueued(target, amount, batchNonce);
+         }
+ 
+-        // Get the current contract OLAS balance
+-        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        // If the target became invalid, withhold OLAS for further usage and remove the queued request
++        if (!_verifyStakingTarget(target)) {
++            uint256 availableBalance = _getAvailableOlasBalance(withheldAmount);
++            if (availableBalance < amount) {
++                revert InsufficientBalance(availableBalance, amount);
++            }
++
++            withheldAmount += amount;
++            stakingQueueingNonces[queueHash] = false;
++
++            emit StakingAmountWithheld(target, amount);
++
++            _locked = 1;
++            return;
++        }
++
++        // Get the current contract OLAS balance that is not reserved as unsynced withheld funds
++        uint256 olasBalance = _getAvailableOlasBalance(withheldAmount);
+         if (olasBalance >= amount) {
+             // Approve and transfer OLAS to the service staking target
+             IToken(olas).approve(target, amount);
+@@ -386,6 +421,12 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert ZeroValue();
+         }
+ 
++        // The withheld amount must be backed by actual OLAS before it is credited on L1
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance < amount) {
++            revert InsufficientBalance(olasBalance, amount);
++        }
++
+         // Zero the withheld amount
+         withheldAmount = 0;
+ 
+diff --git a/tokenomics/audits/internal4/analysis2/contracts/DefaultTargetDispenserL2-flatten.sol b/tokenomics/audits/internal4/analysis2/contracts/DefaultTargetDispenserL2-flatten.sol
+index 872d9b0..bf49c81 100644
+--- a/tokenomics/audits/internal4/analysis2/contracts/DefaultTargetDispenserL2-flatten.sol
++++ b/tokenomics/audits/internal4/analysis2/contracts/DefaultTargetDispenserL2-flatten.sol
+@@ -247,16 +247,7 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             address target = targets[i];
+             uint256 amount = amounts[i];
+ 
+-            // Check the target validity address and staking parameters, and get emissions amount
+-            // This is a low level call since it must never revert
+-            bytes memory verifyData = abi.encodeCall(IStakingFactory.verifyInstanceAndGetEmissionsAmount, target);
+-            (bool success, bytes memory returnData) = stakingFactory.call(verifyData);
+-
+-            uint256 limitAmount;
+-            // If the function call was successful, check the return value
+-            if (success && returnData.length == 32) {
+-                limitAmount = abi.decode(returnData, (uint256));
+-            }
++            uint256 limitAmount = _getStakingTargetLimit(target);
+ 
+             // If the limit amount is zero, withhold OLAS amount and continue
+             if (limitAmount == 0) {
+@@ -277,8 +268,8 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+                 emit AmountWithheld(target, targetWithheldAmount);
+             }
+ 
+-            // Check the OLAS balance and the contract being unpaused
+-            if (IToken(olas).balanceOf(address(this)) >= amount && localPaused == 1) {
++            // Check the OLAS balance that is not reserved as unsynced withheld funds and the contract being unpaused
++            if (_getAvailableOlasBalance(withheldAmount + localWithheldAmount) >= amount && localPaused == 1) {
+                 // Approve and transfer OLAS to the service staking target
+                 IToken(olas).approve(target, amount);
+                 IStaking(target).deposit(amount);
+@@ -304,6 +295,31 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+         _locked = 1;
+     }
+ 
++    /// @dev Gets staking target emissions limit, returning zero on any verification failure.
++    /// @param target Staking target address.
++    /// @return limitAmount Verified target emissions amount limit.
++    function _getStakingTargetLimit(address target) internal returns (uint256 limitAmount) {
++        // Check the target validity address and staking parameters, and get emissions amount
++        // This is a low level call since it must never revert
++        bytes memory verifyData = abi.encodeCall(IStakingFactory.verifyInstanceAndGetEmissionsAmount, target);
++        (bool success, bytes memory returnData) = stakingFactory.call(verifyData);
++
++        // If the function call was successful, check the return value
++        if (success && returnData.length == 32) {
++            limitAmount = abi.decode(returnData, (uint256));
++        }
++    }
++
++    /// @dev Gets OLAS balance available for staking deposits after reserving unsynced withheld funds.
++    /// @param reservedAmount OLAS amount that must not be spent on deposits.
++    /// @return availableBalance OLAS amount available for staking deposits.
++    function _getAvailableOlasBalance(uint256 reservedAmount) internal view returns (uint256 availableBalance) {
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance > reservedAmount) {
++            availableBalance = olasBalance - reservedAmount;
++        }
++    }
++
+     /// @dev Sends message to L1 to sync the withheld amount.
+     /// @param amount Amount to sync.
+     /// @param bridgePayload Payload data for the bridge relayer.
+@@ -375,20 +391,53 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert TargetAmountNotQueued(target, amount, batchNonce);
+         }
+ 
+-        // Get the current contract OLAS balance
+-        uint256 olasBalance = IToken(olas).balanceOf(address(this));
+-        if (olasBalance >= amount) {
++        uint256 limitAmount = _getStakingTargetLimit(target);
++
++        // If the target became invalid, withhold OLAS for further usage and remove the queued request
++        if (limitAmount == 0) {
++            uint256 availableBalance = _getAvailableOlasBalance(withheldAmount);
++            if (availableBalance < amount) {
++                revert InsufficientBalance(availableBalance, amount);
++            }
++
++            withheldAmount += amount;
++            stakingQueueingNonces[queueHash] = false;
++
++            emit AmountWithheld(target, amount);
++
++            _locked = 1;
++            return;
++        }
++
++        uint256 targetWithheldAmount;
++        uint256 depositAmount = amount;
++        // Check the amount limit and adjust, if necessary
++        if (depositAmount > limitAmount) {
++            targetWithheldAmount = depositAmount - limitAmount;
++            depositAmount = limitAmount;
++        }
++
++        // Get the current contract OLAS balance that is not reserved as unsynced withheld funds
++        uint256 reservedAmount = withheldAmount + targetWithheldAmount;
++        uint256 olasBalance = _getAvailableOlasBalance(reservedAmount);
++        if (olasBalance >= depositAmount) {
++            // Account for the amount that no longer fits the target limit
++            if (targetWithheldAmount > 0) {
++                withheldAmount = reservedAmount;
++                emit AmountWithheld(target, targetWithheldAmount);
++            }
++
+             // Approve and transfer OLAS to the service staking target
+-            IToken(olas).approve(target, amount);
+-            IStaking(target).deposit(amount);
++            IToken(olas).approve(target, depositAmount);
++            IStaking(target).deposit(depositAmount);
+ 
+-            emit StakingTargetDeposited(target, amount);
++            emit StakingTargetDeposited(target, depositAmount);
+ 
+             // Remove processed queued nonce
+             stakingQueueingNonces[queueHash] = false;
+         } else {
+             // OLAS balance is not enough for redeem
+-            revert InsufficientBalance(olasBalance, amount);
++            revert InsufficientBalance(olasBalance, depositAmount);
+         }
+ 
+         _locked = 1;
+@@ -430,6 +479,12 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert ZeroValue();
+         }
+ 
++        // The withheld amount must be backed by actual OLAS before it is credited on L1
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance < amount) {
++            revert InsufficientBalance(olasBalance, amount);
++        }
++
+         // Zero the withheld amount
+         withheldAmount = 0;
+ 
+diff --git a/tokenomics/audits/internal4/analysis2/contracts/GnosisTargetDispenserL2-flatten.sol b/tokenomics/audits/internal4/analysis2/contracts/GnosisTargetDispenserL2-flatten.sol
+index 733c8a6..f1cb6be 100644
+--- a/tokenomics/audits/internal4/analysis2/contracts/GnosisTargetDispenserL2-flatten.sol
++++ b/tokenomics/audits/internal4/analysis2/contracts/GnosisTargetDispenserL2-flatten.sol
+@@ -250,16 +250,7 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             address target = targets[i];
+             uint256 amount = amounts[i];
+ 
+-            // Check the target validity address and staking parameters, and get emissions amount
+-            // This is a low level call since it must never revert
+-            bytes memory verifyData = abi.encodeCall(IStakingFactory.verifyInstanceAndGetEmissionsAmount, target);
+-            (bool success, bytes memory returnData) = stakingFactory.call(verifyData);
+-
+-            uint256 limitAmount;
+-            // If the function call was successful, check the return value
+-            if (success && returnData.length == 32) {
+-                limitAmount = abi.decode(returnData, (uint256));
+-            }
++            uint256 limitAmount = _getStakingTargetLimit(target);
+ 
+             // If the limit amount is zero, withhold OLAS amount and continue
+             if (limitAmount == 0) {
+@@ -280,8 +271,8 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+                 emit AmountWithheld(target, targetWithheldAmount);
+             }
+ 
+-            // Check the OLAS balance and the contract being unpaused
+-            if (IToken(olas).balanceOf(address(this)) >= amount && localPaused == 1) {
++            // Check the OLAS balance that is not reserved as unsynced withheld funds and the contract being unpaused
++            if (_getAvailableOlasBalance(withheldAmount + localWithheldAmount) >= amount && localPaused == 1) {
+                 // Approve and transfer OLAS to the service staking target
+                 IToken(olas).approve(target, amount);
+                 IStaking(target).deposit(amount);
+@@ -307,6 +298,31 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+         _locked = 1;
+     }
+ 
++    /// @dev Gets staking target emissions limit, returning zero on any verification failure.
++    /// @param target Staking target address.
++    /// @return limitAmount Verified target emissions amount limit.
++    function _getStakingTargetLimit(address target) internal returns (uint256 limitAmount) {
++        // Check the target validity address and staking parameters, and get emissions amount
++        // This is a low level call since it must never revert
++        bytes memory verifyData = abi.encodeCall(IStakingFactory.verifyInstanceAndGetEmissionsAmount, target);
++        (bool success, bytes memory returnData) = stakingFactory.call(verifyData);
++
++        // If the function call was successful, check the return value
++        if (success && returnData.length == 32) {
++            limitAmount = abi.decode(returnData, (uint256));
++        }
++    }
++
++    /// @dev Gets OLAS balance available for staking deposits after reserving unsynced withheld funds.
++    /// @param reservedAmount OLAS amount that must not be spent on deposits.
++    /// @return availableBalance OLAS amount available for staking deposits.
++    function _getAvailableOlasBalance(uint256 reservedAmount) internal view returns (uint256 availableBalance) {
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance > reservedAmount) {
++            availableBalance = olasBalance - reservedAmount;
++        }
++    }
++
+     /// @dev Sends message to L1 to sync the withheld amount.
+     /// @param amount Amount to sync.
+     /// @param bridgePayload Payload data for the bridge relayer.
+@@ -378,20 +394,53 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert TargetAmountNotQueued(target, amount, batchNonce);
+         }
+ 
+-        // Get the current contract OLAS balance
+-        uint256 olasBalance = IToken(olas).balanceOf(address(this));
+-        if (olasBalance >= amount) {
++        uint256 limitAmount = _getStakingTargetLimit(target);
++
++        // If the target became invalid, withhold OLAS for further usage and remove the queued request
++        if (limitAmount == 0) {
++            uint256 availableBalance = _getAvailableOlasBalance(withheldAmount);
++            if (availableBalance < amount) {
++                revert InsufficientBalance(availableBalance, amount);
++            }
++
++            withheldAmount += amount;
++            stakingQueueingNonces[queueHash] = false;
++
++            emit AmountWithheld(target, amount);
++
++            _locked = 1;
++            return;
++        }
++
++        uint256 targetWithheldAmount;
++        uint256 depositAmount = amount;
++        // Check the amount limit and adjust, if necessary
++        if (depositAmount > limitAmount) {
++            targetWithheldAmount = depositAmount - limitAmount;
++            depositAmount = limitAmount;
++        }
++
++        // Get the current contract OLAS balance that is not reserved as unsynced withheld funds
++        uint256 reservedAmount = withheldAmount + targetWithheldAmount;
++        uint256 olasBalance = _getAvailableOlasBalance(reservedAmount);
++        if (olasBalance >= depositAmount) {
++            // Account for the amount that no longer fits the target limit
++            if (targetWithheldAmount > 0) {
++                withheldAmount = reservedAmount;
++                emit AmountWithheld(target, targetWithheldAmount);
++            }
++
+             // Approve and transfer OLAS to the service staking target
+-            IToken(olas).approve(target, amount);
+-            IStaking(target).deposit(amount);
++            IToken(olas).approve(target, depositAmount);
++            IStaking(target).deposit(depositAmount);
+ 
+-            emit StakingTargetDeposited(target, amount);
++            emit StakingTargetDeposited(target, depositAmount);
+ 
+             // Remove processed queued nonce
+             stakingQueueingNonces[queueHash] = false;
+         } else {
+             // OLAS balance is not enough for redeem
+-            revert InsufficientBalance(olasBalance, amount);
++            revert InsufficientBalance(olasBalance, depositAmount);
+         }
+ 
+         _locked = 1;
+@@ -433,6 +482,12 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert ZeroValue();
+         }
+ 
++        // The withheld amount must be backed by actual OLAS before it is credited on L1
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance < amount) {
++            revert InsufficientBalance(olasBalance, amount);
++        }
++
+         // Zero the withheld amount
+         withheldAmount = 0;
+ 
+diff --git a/tokenomics/audits/internal4/analysis2/contracts/OptimismTargetDispenserL2-flatten.sol b/tokenomics/audits/internal4/analysis2/contracts/OptimismTargetDispenserL2-flatten.sol
+index ebf584d..9b88af5 100644
+--- a/tokenomics/audits/internal4/analysis2/contracts/OptimismTargetDispenserL2-flatten.sol
++++ b/tokenomics/audits/internal4/analysis2/contracts/OptimismTargetDispenserL2-flatten.sol
+@@ -247,16 +247,7 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             address target = targets[i];
+             uint256 amount = amounts[i];
+ 
+-            // Check the target validity address and staking parameters, and get emissions amount
+-            // This is a low level call since it must never revert
+-            bytes memory verifyData = abi.encodeCall(IStakingFactory.verifyInstanceAndGetEmissionsAmount, target);
+-            (bool success, bytes memory returnData) = stakingFactory.call(verifyData);
+-
+-            uint256 limitAmount;
+-            // If the function call was successful, check the return value
+-            if (success && returnData.length == 32) {
+-                limitAmount = abi.decode(returnData, (uint256));
+-            }
++            uint256 limitAmount = _getStakingTargetLimit(target);
+ 
+             // If the limit amount is zero, withhold OLAS amount and continue
+             if (limitAmount == 0) {
+@@ -277,8 +268,8 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+                 emit AmountWithheld(target, targetWithheldAmount);
+             }
+ 
+-            // Check the OLAS balance and the contract being unpaused
+-            if (IToken(olas).balanceOf(address(this)) >= amount && localPaused == 1) {
++            // Check the OLAS balance that is not reserved as unsynced withheld funds and the contract being unpaused
++            if (_getAvailableOlasBalance(withheldAmount + localWithheldAmount) >= amount && localPaused == 1) {
+                 // Approve and transfer OLAS to the service staking target
+                 IToken(olas).approve(target, amount);
+                 IStaking(target).deposit(amount);
+@@ -304,6 +295,31 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+         _locked = 1;
+     }
+ 
++    /// @dev Gets staking target emissions limit, returning zero on any verification failure.
++    /// @param target Staking target address.
++    /// @return limitAmount Verified target emissions amount limit.
++    function _getStakingTargetLimit(address target) internal returns (uint256 limitAmount) {
++        // Check the target validity address and staking parameters, and get emissions amount
++        // This is a low level call since it must never revert
++        bytes memory verifyData = abi.encodeCall(IStakingFactory.verifyInstanceAndGetEmissionsAmount, target);
++        (bool success, bytes memory returnData) = stakingFactory.call(verifyData);
++
++        // If the function call was successful, check the return value
++        if (success && returnData.length == 32) {
++            limitAmount = abi.decode(returnData, (uint256));
++        }
++    }
++
++    /// @dev Gets OLAS balance available for staking deposits after reserving unsynced withheld funds.
++    /// @param reservedAmount OLAS amount that must not be spent on deposits.
++    /// @return availableBalance OLAS amount available for staking deposits.
++    function _getAvailableOlasBalance(uint256 reservedAmount) internal view returns (uint256 availableBalance) {
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance > reservedAmount) {
++            availableBalance = olasBalance - reservedAmount;
++        }
++    }
++
+     /// @dev Sends message to L1 to sync the withheld amount.
+     /// @param amount Amount to sync.
+     /// @param bridgePayload Payload data for the bridge relayer.
+@@ -375,20 +391,53 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert TargetAmountNotQueued(target, amount, batchNonce);
+         }
+ 
+-        // Get the current contract OLAS balance
+-        uint256 olasBalance = IToken(olas).balanceOf(address(this));
+-        if (olasBalance >= amount) {
++        uint256 limitAmount = _getStakingTargetLimit(target);
++
++        // If the target became invalid, withhold OLAS for further usage and remove the queued request
++        if (limitAmount == 0) {
++            uint256 availableBalance = _getAvailableOlasBalance(withheldAmount);
++            if (availableBalance < amount) {
++                revert InsufficientBalance(availableBalance, amount);
++            }
++
++            withheldAmount += amount;
++            stakingQueueingNonces[queueHash] = false;
++
++            emit AmountWithheld(target, amount);
++
++            _locked = 1;
++            return;
++        }
++
++        uint256 targetWithheldAmount;
++        uint256 depositAmount = amount;
++        // Check the amount limit and adjust, if necessary
++        if (depositAmount > limitAmount) {
++            targetWithheldAmount = depositAmount - limitAmount;
++            depositAmount = limitAmount;
++        }
++
++        // Get the current contract OLAS balance that is not reserved as unsynced withheld funds
++        uint256 reservedAmount = withheldAmount + targetWithheldAmount;
++        uint256 olasBalance = _getAvailableOlasBalance(reservedAmount);
++        if (olasBalance >= depositAmount) {
++            // Account for the amount that no longer fits the target limit
++            if (targetWithheldAmount > 0) {
++                withheldAmount = reservedAmount;
++                emit AmountWithheld(target, targetWithheldAmount);
++            }
++
+             // Approve and transfer OLAS to the service staking target
+-            IToken(olas).approve(target, amount);
+-            IStaking(target).deposit(amount);
++            IToken(olas).approve(target, depositAmount);
++            IStaking(target).deposit(depositAmount);
+ 
+-            emit StakingTargetDeposited(target, amount);
++            emit StakingTargetDeposited(target, depositAmount);
+ 
+             // Remove processed queued nonce
+             stakingQueueingNonces[queueHash] = false;
+         } else {
+             // OLAS balance is not enough for redeem
+-            revert InsufficientBalance(olasBalance, amount);
++            revert InsufficientBalance(olasBalance, depositAmount);
+         }
+ 
+         _locked = 1;
+@@ -430,6 +479,12 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert ZeroValue();
+         }
+ 
++        // The withheld amount must be backed by actual OLAS before it is credited on L1
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance < amount) {
++            revert InsufficientBalance(olasBalance, amount);
++        }
++
+         // Zero the withheld amount
+         withheldAmount = 0;
+ 
+diff --git a/tokenomics/audits/internal4/analysis2/contracts/PolygonTargetDispenserL2-flatten.sol b/tokenomics/audits/internal4/analysis2/contracts/PolygonTargetDispenserL2-flatten.sol
+index 636f9d7..6348668 100644
+--- a/tokenomics/audits/internal4/analysis2/contracts/PolygonTargetDispenserL2-flatten.sol
++++ b/tokenomics/audits/internal4/analysis2/contracts/PolygonTargetDispenserL2-flatten.sol
+@@ -247,16 +247,7 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             address target = targets[i];
+             uint256 amount = amounts[i];
+ 
+-            // Check the target validity address and staking parameters, and get emissions amount
+-            // This is a low level call since it must never revert
+-            bytes memory verifyData = abi.encodeCall(IStakingFactory.verifyInstanceAndGetEmissionsAmount, target);
+-            (bool success, bytes memory returnData) = stakingFactory.call(verifyData);
+-
+-            uint256 limitAmount;
+-            // If the function call was successful, check the return value
+-            if (success && returnData.length == 32) {
+-                limitAmount = abi.decode(returnData, (uint256));
+-            }
++            uint256 limitAmount = _getStakingTargetLimit(target);
+ 
+             // If the limit amount is zero, withhold OLAS amount and continue
+             if (limitAmount == 0) {
+@@ -277,8 +268,8 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+                 emit AmountWithheld(target, targetWithheldAmount);
+             }
+ 
+-            // Check the OLAS balance and the contract being unpaused
+-            if (IToken(olas).balanceOf(address(this)) >= amount && localPaused == 1) {
++            // Check the OLAS balance that is not reserved as unsynced withheld funds and the contract being unpaused
++            if (_getAvailableOlasBalance(withheldAmount + localWithheldAmount) >= amount && localPaused == 1) {
+                 // Approve and transfer OLAS to the service staking target
+                 IToken(olas).approve(target, amount);
+                 IStaking(target).deposit(amount);
+@@ -304,6 +295,31 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+         _locked = 1;
+     }
+ 
++    /// @dev Gets staking target emissions limit, returning zero on any verification failure.
++    /// @param target Staking target address.
++    /// @return limitAmount Verified target emissions amount limit.
++    function _getStakingTargetLimit(address target) internal returns (uint256 limitAmount) {
++        // Check the target validity address and staking parameters, and get emissions amount
++        // This is a low level call since it must never revert
++        bytes memory verifyData = abi.encodeCall(IStakingFactory.verifyInstanceAndGetEmissionsAmount, target);
++        (bool success, bytes memory returnData) = stakingFactory.call(verifyData);
++
++        // If the function call was successful, check the return value
++        if (success && returnData.length == 32) {
++            limitAmount = abi.decode(returnData, (uint256));
++        }
++    }
++
++    /// @dev Gets OLAS balance available for staking deposits after reserving unsynced withheld funds.
++    /// @param reservedAmount OLAS amount that must not be spent on deposits.
++    /// @return availableBalance OLAS amount available for staking deposits.
++    function _getAvailableOlasBalance(uint256 reservedAmount) internal view returns (uint256 availableBalance) {
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance > reservedAmount) {
++            availableBalance = olasBalance - reservedAmount;
++        }
++    }
++
+     /// @dev Sends message to L1 to sync the withheld amount.
+     /// @param amount Amount to sync.
+     /// @param bridgePayload Payload data for the bridge relayer.
+@@ -375,20 +391,53 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert TargetAmountNotQueued(target, amount, batchNonce);
+         }
+ 
+-        // Get the current contract OLAS balance
+-        uint256 olasBalance = IToken(olas).balanceOf(address(this));
+-        if (olasBalance >= amount) {
++        uint256 limitAmount = _getStakingTargetLimit(target);
++
++        // If the target became invalid, withhold OLAS for further usage and remove the queued request
++        if (limitAmount == 0) {
++            uint256 availableBalance = _getAvailableOlasBalance(withheldAmount);
++            if (availableBalance < amount) {
++                revert InsufficientBalance(availableBalance, amount);
++            }
++
++            withheldAmount += amount;
++            stakingQueueingNonces[queueHash] = false;
++
++            emit AmountWithheld(target, amount);
++
++            _locked = 1;
++            return;
++        }
++
++        uint256 targetWithheldAmount;
++        uint256 depositAmount = amount;
++        // Check the amount limit and adjust, if necessary
++        if (depositAmount > limitAmount) {
++            targetWithheldAmount = depositAmount - limitAmount;
++            depositAmount = limitAmount;
++        }
++
++        // Get the current contract OLAS balance that is not reserved as unsynced withheld funds
++        uint256 reservedAmount = withheldAmount + targetWithheldAmount;
++        uint256 olasBalance = _getAvailableOlasBalance(reservedAmount);
++        if (olasBalance >= depositAmount) {
++            // Account for the amount that no longer fits the target limit
++            if (targetWithheldAmount > 0) {
++                withheldAmount = reservedAmount;
++                emit AmountWithheld(target, targetWithheldAmount);
++            }
++
+             // Approve and transfer OLAS to the service staking target
+-            IToken(olas).approve(target, amount);
+-            IStaking(target).deposit(amount);
++            IToken(olas).approve(target, depositAmount);
++            IStaking(target).deposit(depositAmount);
+ 
+-            emit StakingTargetDeposited(target, amount);
++            emit StakingTargetDeposited(target, depositAmount);
+ 
+             // Remove processed queued nonce
+             stakingQueueingNonces[queueHash] = false;
+         } else {
+             // OLAS balance is not enough for redeem
+-            revert InsufficientBalance(olasBalance, amount);
++            revert InsufficientBalance(olasBalance, depositAmount);
+         }
+ 
+         _locked = 1;
+@@ -430,6 +479,12 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert ZeroValue();
+         }
+ 
++        // The withheld amount must be backed by actual OLAS before it is credited on L1
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance < amount) {
++            revert InsufficientBalance(olasBalance, amount);
++        }
++
+         // Zero the withheld amount
+         withheldAmount = 0;
+ 
+diff --git a/tokenomics/audits/internal4/analysis2/contracts/WormholeTargetDispenserL2-flatten.sol b/tokenomics/audits/internal4/analysis2/contracts/WormholeTargetDispenserL2-flatten.sol
+index 309f11b..c3de48f 100644
+--- a/tokenomics/audits/internal4/analysis2/contracts/WormholeTargetDispenserL2-flatten.sol
++++ b/tokenomics/audits/internal4/analysis2/contracts/WormholeTargetDispenserL2-flatten.sol
+@@ -245,16 +245,7 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             address target = targets[i];
+             uint256 amount = amounts[i];
+ 
+-            // Check the target validity address and staking parameters, and get emissions amount
+-            // This is a low level call since it must never revert
+-            bytes memory verifyData = abi.encodeCall(IStakingFactory.verifyInstanceAndGetEmissionsAmount, target);
+-            (bool success, bytes memory returnData) = stakingFactory.call(verifyData);
+-
+-            uint256 limitAmount;
+-            // If the function call was successful, check the return value
+-            if (success && returnData.length == 32) {
+-                limitAmount = abi.decode(returnData, (uint256));
+-            }
++            uint256 limitAmount = _getStakingTargetLimit(target);
+ 
+             // If the limit amount is zero, withhold OLAS amount and continue
+             if (limitAmount == 0) {
+@@ -275,8 +266,8 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+                 emit AmountWithheld(target, targetWithheldAmount);
+             }
+ 
+-            // Check the OLAS balance and the contract being unpaused
+-            if (IToken(olas).balanceOf(address(this)) >= amount && localPaused == 1) {
++            // Check the OLAS balance that is not reserved as unsynced withheld funds and the contract being unpaused
++            if (_getAvailableOlasBalance(withheldAmount + localWithheldAmount) >= amount && localPaused == 1) {
+                 // Approve and transfer OLAS to the service staking target
+                 IToken(olas).approve(target, amount);
+                 IStaking(target).deposit(amount);
+@@ -302,6 +293,31 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+         _locked = 1;
+     }
+ 
++    /// @dev Gets staking target emissions limit, returning zero on any verification failure.
++    /// @param target Staking target address.
++    /// @return limitAmount Verified target emissions amount limit.
++    function _getStakingTargetLimit(address target) internal returns (uint256 limitAmount) {
++        // Check the target validity address and staking parameters, and get emissions amount
++        // This is a low level call since it must never revert
++        bytes memory verifyData = abi.encodeCall(IStakingFactory.verifyInstanceAndGetEmissionsAmount, target);
++        (bool success, bytes memory returnData) = stakingFactory.call(verifyData);
++
++        // If the function call was successful, check the return value
++        if (success && returnData.length == 32) {
++            limitAmount = abi.decode(returnData, (uint256));
++        }
++    }
++
++    /// @dev Gets OLAS balance available for staking deposits after reserving unsynced withheld funds.
++    /// @param reservedAmount OLAS amount that must not be spent on deposits.
++    /// @return availableBalance OLAS amount available for staking deposits.
++    function _getAvailableOlasBalance(uint256 reservedAmount) internal view returns (uint256 availableBalance) {
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance > reservedAmount) {
++            availableBalance = olasBalance - reservedAmount;
++        }
++    }
++
+     /// @dev Sends message to L1 to sync the withheld amount.
+     /// @param amount Amount to sync.
+     /// @param bridgePayload Payload data for the bridge relayer.
+@@ -373,20 +389,53 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert TargetAmountNotQueued(target, amount, batchNonce);
+         }
+ 
+-        // Get the current contract OLAS balance
+-        uint256 olasBalance = IToken(olas).balanceOf(address(this));
+-        if (olasBalance >= amount) {
++        uint256 limitAmount = _getStakingTargetLimit(target);
++
++        // If the target became invalid, withhold OLAS for further usage and remove the queued request
++        if (limitAmount == 0) {
++            uint256 availableBalance = _getAvailableOlasBalance(withheldAmount);
++            if (availableBalance < amount) {
++                revert InsufficientBalance(availableBalance, amount);
++            }
++
++            withheldAmount += amount;
++            stakingQueueingNonces[queueHash] = false;
++
++            emit AmountWithheld(target, amount);
++
++            _locked = 1;
++            return;
++        }
++
++        uint256 targetWithheldAmount;
++        uint256 depositAmount = amount;
++        // Check the amount limit and adjust, if necessary
++        if (depositAmount > limitAmount) {
++            targetWithheldAmount = depositAmount - limitAmount;
++            depositAmount = limitAmount;
++        }
++
++        // Get the current contract OLAS balance that is not reserved as unsynced withheld funds
++        uint256 reservedAmount = withheldAmount + targetWithheldAmount;
++        uint256 olasBalance = _getAvailableOlasBalance(reservedAmount);
++        if (olasBalance >= depositAmount) {
++            // Account for the amount that no longer fits the target limit
++            if (targetWithheldAmount > 0) {
++                withheldAmount = reservedAmount;
++                emit AmountWithheld(target, targetWithheldAmount);
++            }
++
+             // Approve and transfer OLAS to the service staking target
+-            IToken(olas).approve(target, amount);
+-            IStaking(target).deposit(amount);
++            IToken(olas).approve(target, depositAmount);
++            IStaking(target).deposit(depositAmount);
+ 
+-            emit StakingTargetDeposited(target, amount);
++            emit StakingTargetDeposited(target, depositAmount);
+ 
+             // Remove processed queued nonce
+             stakingQueueingNonces[queueHash] = false;
+         } else {
+             // OLAS balance is not enough for redeem
+-            revert InsufficientBalance(olasBalance, amount);
++            revert InsufficientBalance(olasBalance, depositAmount);
+         }
+ 
+         _locked = 1;
+@@ -428,6 +477,12 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert ZeroValue();
+         }
+ 
++        // The withheld amount must be backed by actual OLAS before it is credited on L1
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance < amount) {
++            revert InsufficientBalance(olasBalance, amount);
++        }
++
+         // Zero the withheld amount
+         withheldAmount = 0;
+ 
+diff --git a/tokenomics/contracts/Treasury.sol b/tokenomics/contracts/Treasury.sol
+index 516c631..4f4fde9 100644
+--- a/tokenomics/contracts/Treasury.sol
++++ b/tokenomics/contracts/Treasury.sol
+@@ -220,15 +220,13 @@ contract Treasury is IErrorsTokenomics {
+             revert UnauthorizedToken(token);
+         }
+ 
+-        // Increase the amount of LP token reserves
+-        uint256 reserves = mapTokenReserves[token] + tokenAmount;
+-        mapTokenReserves[token] = reserves;
+-
+         // Uniswap allowance implementation does not revert with the accurate message, need to check before the transfer is engaged
+         if (IToken(token).allowance(account, address(this)) < tokenAmount) {
+             revert InsufficientAllowance(IToken(token).allowance((account), address(this)), tokenAmount);
+         }
+ 
++        uint256 balanceBefore = IToken(token).balanceOf(address(this));
++
+         // Transfer tokens from account to treasury and add to the token treasury reserves
+         // We assume that authorized LP tokens in the protocol are safe as they are enabled via the governance
+         // UniswapV2ERC20 realization has a standard transferFrom() function that returns a boolean value
+@@ -237,6 +235,19 @@ contract Treasury is IErrorsTokenomics {
+             revert TransferFailed(token, account, address(this), tokenAmount);
+         }
+ 
++        uint256 balanceAfter = IToken(token).balanceOf(address(this));
++        uint256 receivedAmount;
++        if (balanceAfter > balanceBefore) {
++            receivedAmount = balanceAfter - balanceBefore;
++        }
++        if (receivedAmount != tokenAmount) {
++            revert WrongAmount(receivedAmount, tokenAmount);
++        }
++
++        // Increase the amount of LP token reserves after verifying the actual received amount
++        uint256 reserves = mapTokenReserves[token] + receivedAmount;
++        mapTokenReserves[token] = reserves;
++
+         // Mint specified number of OLAS tokens corresponding to tokens bonding deposit
+         // The olasMintAmount is guaranteed by the product supply limit, which is limited by the effectiveBond
+         IOLAS(olas).mint(msg.sender, olasMintAmount);
+diff --git a/tokenomics/contracts/staking/DefaultTargetDispenserL2.sol b/tokenomics/contracts/staking/DefaultTargetDispenserL2.sol
+index 1535203..8494b1b 100644
+--- a/tokenomics/contracts/staking/DefaultTargetDispenserL2.sol
++++ b/tokenomics/contracts/staking/DefaultTargetDispenserL2.sol
+@@ -155,16 +155,7 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             address target = targets[i];
+             uint256 amount = amounts[i];
+ 
+-            // Check the target validity address and staking parameters, and get emissions amount
+-            // This is a low level call since it must never revert
+-            bytes memory verifyData = abi.encodeCall(IStakingFactory.verifyInstanceAndGetEmissionsAmount, target);
+-            (bool success, bytes memory returnData) = stakingFactory.call(verifyData);
+-
+-            uint256 limitAmount;
+-            // If the function call was successful, check the return value
+-            if (success && returnData.length == 32) {
+-                limitAmount = abi.decode(returnData, (uint256));
+-            }
++            uint256 limitAmount = _getStakingTargetLimit(target);
+ 
+             // If the limit amount is zero, withhold OLAS amount and continue
+             if (limitAmount == 0) {
+@@ -185,8 +176,8 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+                 emit AmountWithheld(target, targetWithheldAmount);
+             }
+ 
+-            // Check the OLAS balance and the contract being unpaused
+-            if (IToken(olas).balanceOf(address(this)) >= amount && localPaused == 1) {
++            // Check the OLAS balance that is not reserved as unsynced withheld funds and the contract being unpaused
++            if (_getAvailableOlasBalance(withheldAmount + localWithheldAmount) >= amount && localPaused == 1) {
+                 // Approve and transfer OLAS to the service staking target
+                 IToken(olas).approve(target, amount);
+                 IStaking(target).deposit(amount);
+@@ -212,6 +203,31 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+         _locked = 1;
+     }
+ 
++    /// @dev Gets staking target emissions limit, returning zero on any verification failure.
++    /// @param target Staking target address.
++    /// @return limitAmount Verified target emissions amount limit.
++    function _getStakingTargetLimit(address target) internal returns (uint256 limitAmount) {
++        // Check the target validity address and staking parameters, and get emissions amount
++        // This is a low level call since it must never revert
++        bytes memory verifyData = abi.encodeCall(IStakingFactory.verifyInstanceAndGetEmissionsAmount, target);
++        (bool success, bytes memory returnData) = stakingFactory.call(verifyData);
++
++        // If the function call was successful, check the return value
++        if (success && returnData.length == 32) {
++            limitAmount = abi.decode(returnData, (uint256));
++        }
++    }
++
++    /// @dev Gets OLAS balance available for staking deposits after reserving unsynced withheld funds.
++    /// @param reservedAmount OLAS amount that must not be spent on deposits.
++    /// @return availableBalance OLAS amount available for staking deposits.
++    function _getAvailableOlasBalance(uint256 reservedAmount) internal view returns (uint256 availableBalance) {
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance > reservedAmount) {
++            availableBalance = olasBalance - reservedAmount;
++        }
++    }
++
+     /// @dev Sends message to L1 to sync the withheld amount.
+     /// @param amount Amount to sync.
+     /// @param bridgePayload Payload data for the bridge relayer.
+@@ -283,20 +299,53 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert TargetAmountNotQueued(target, amount, batchNonce);
+         }
+ 
+-        // Get the current contract OLAS balance
+-        uint256 olasBalance = IToken(olas).balanceOf(address(this));
+-        if (olasBalance >= amount) {
++        uint256 limitAmount = _getStakingTargetLimit(target);
++
++        // If the target became invalid, withhold OLAS for further usage and remove the queued request
++        if (limitAmount == 0) {
++            uint256 availableBalance = _getAvailableOlasBalance(withheldAmount);
++            if (availableBalance < amount) {
++                revert InsufficientBalance(availableBalance, amount);
++            }
++
++            withheldAmount += amount;
++            stakingQueueingNonces[queueHash] = false;
++
++            emit AmountWithheld(target, amount);
++
++            _locked = 1;
++            return;
++        }
++
++        uint256 targetWithheldAmount;
++        uint256 depositAmount = amount;
++        // Check the amount limit and adjust, if necessary
++        if (depositAmount > limitAmount) {
++            targetWithheldAmount = depositAmount - limitAmount;
++            depositAmount = limitAmount;
++        }
++
++        // Get the current contract OLAS balance that is not reserved as unsynced withheld funds
++        uint256 reservedAmount = withheldAmount + targetWithheldAmount;
++        uint256 olasBalance = _getAvailableOlasBalance(reservedAmount);
++        if (olasBalance >= depositAmount) {
++            // Account for the amount that no longer fits the target limit
++            if (targetWithheldAmount > 0) {
++                withheldAmount = reservedAmount;
++                emit AmountWithheld(target, targetWithheldAmount);
++            }
++
+             // Approve and transfer OLAS to the service staking target
+-            IToken(olas).approve(target, amount);
+-            IStaking(target).deposit(amount);
++            IToken(olas).approve(target, depositAmount);
++            IStaking(target).deposit(depositAmount);
+ 
+-            emit StakingTargetDeposited(target, amount);
++            emit StakingTargetDeposited(target, depositAmount);
+ 
+             // Remove processed queued nonce
+             stakingQueueingNonces[queueHash] = false;
+         } else {
+             // OLAS balance is not enough for redeem
+-            revert InsufficientBalance(olasBalance, amount);
++            revert InsufficientBalance(olasBalance, depositAmount);
+         }
+ 
+         _locked = 1;
+@@ -338,6 +387,12 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+             revert ZeroValue();
+         }
+ 
++        // The withheld amount must be backed by actual OLAS before it is credited on L1
++        uint256 olasBalance = IToken(olas).balanceOf(address(this));
++        if (olasBalance < amount) {
++            revert InsufficientBalance(olasBalance, amount);
++        }
++
+         // Zero the withheld amount
+         withheldAmount = 0;
+ 
+@@ -463,4 +518,4 @@ abstract contract DefaultTargetDispenserL2 is IBridgeErrors {
+ 
+         emit FundsReceived(msg.sender, msg.value);
+     }
+-}
+\ No newline at end of file
++}

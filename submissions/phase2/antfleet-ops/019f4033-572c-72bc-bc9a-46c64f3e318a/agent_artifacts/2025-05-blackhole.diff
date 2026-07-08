@@ -1,0 +1,269 @@
+diff --git a/contracts/AVM/AutoVotingEscrowManager.sol b/contracts/AVM/AutoVotingEscrowManager.sol
+index b39ed00..323f0a6 100644
+--- a/contracts/AVM/AutoVotingEscrowManager.sol
++++ b/contracts/AVM/AutoVotingEscrowManager.sol
+@@ -80,6 +80,7 @@ contract AutoVotingEscrowManager is IAutoVotingEscrowManager, Initializable, Own
+             avms.push(target);
+         }
+ 
++        originalOwner[tokenId] = msg.sender;
+         votingEscrow.transferFrom(msg.sender, address(target), tokenId);
+         target.acceptLock(msg.sender, tokenId); // insert to token Ids here
+         tokenIdToAVMId[tokenId] = nextAvailableAVMIndex + 1;
+@@ -98,6 +99,7 @@ contract AutoVotingEscrowManager is IAutoVotingEscrowManager, Initializable, Own
+         votingEscrow.transferFrom(address(avm), msg.sender, tokenId);
+ 
+         delete tokenIdToAVMId[tokenId];
++        delete originalOwner[tokenId];
+ 
+         // If AVM became non-full, track it
+         if ((!avm.isFull()) && (avmIdxOneBased - 1 < nextAvailableAVMIndex)) {
+@@ -191,9 +193,16 @@ contract AutoVotingEscrowManager is IAutoVotingEscrowManager, Initializable, Own
+         }
+     }
+ 
+-    function setOriginalOwner(uint256 _tokenId, address _user) external onlyVotingEscrow {} // implement this
++    function setOriginalOwner(uint256 _tokenId, address _user) external onlyVotingEscrow {
++        require(_user != address(0), "ZA");
++        originalOwner[_tokenId] = _user;
++    }
+ 
+     function getOriginalOwner(uint256 _tokenId) external view returns (address) {
++        address storedOwner = originalOwner[_tokenId];
++        if (storedOwner != address(0)) {
++            return storedOwner;
++        }
+         uint256 avmIdxOneBased = tokenIdToAVMId[_tokenId];
+         require(avmIdxOneBased > 0 && avmIdxOneBased - 1 < avms.length, "out of range");
+ 
+diff --git a/contracts/AVM/interfaces/IAutoVotingEscrowManager.sol b/contracts/AVM/interfaces/IAutoVotingEscrowManager.sol
+index 3b4ea5d..b50215f 100644
+--- a/contracts/AVM/interfaces/IAutoVotingEscrowManager.sol
++++ b/contracts/AVM/interfaces/IAutoVotingEscrowManager.sol
+@@ -10,6 +10,6 @@ interface IAutoVotingEscrowManager {
+     function getTotalVotingPower() external view returns (uint256 _totalAVMVotingPower);
+     function executor() external view returns (address);
+     function getAVMs() external view returns (IAutoVotingEscrow[] memory);
+-    function tokenIdToAVMId(uint256 tokenId) external returns(uint256 avmIdx);
++    function tokenIdToAVMId(uint256 tokenId) external view returns(uint256 avmIdx);
+     function getOriginalOwner(uint256 tokenId) external view returns(address);
+ }
+diff --git a/contracts/Bribes.sol b/contracts/Bribes.sol
+index cc76a18..10ed61b 100644
+--- a/contracts/Bribes.sol
++++ b/contracts/Bribes.sol
+@@ -271,8 +271,8 @@ contract Bribe is ReentrancyGuard {
+     /// @notice Claim the TOKENID rewards
+     function getReward(uint256 tokenId, address[] memory tokens) external nonReentrant  {
+         address _owner = IVotingEscrow(ve).ownerOf(tokenId);
+-        if(_owner == avm) {
+-            _owner = IAutomatedVotingManager(avm).originalOwner(tokenId);
++        if(avm != address(0) && IAutomatedVotingManager(avm).tokenIdToAVMId(tokenId) != 0) {
++            _owner = IAutomatedVotingManager(avm).getOriginalOwner(tokenId);
+         }
+         require(msg.sender == gaugeManager, "NA");
+         uint256 _length = tokens.length;
+diff --git a/contracts/GaugeManager.sol b/contracts/GaugeManager.sol
+index 0c0c825..9be79e4 100644
+--- a/contracts/GaugeManager.sol
++++ b/contracts/GaugeManager.sol
+@@ -183,7 +183,6 @@ contract GaugeManager is OwnableUpgradeable, ReentrancyGuardUpgradeable {
+         require(gauges[_pool] == address(0x0), "DNE");
+         require(_pool.code.length > 0, "CODELEN");
+         bool isPair;
+-        address bonusRewardToken = bonusRewardToken;
+         address _factory = _factoriesData.pairFactories[_gaugeType];
+         address _gaugeFactory = _factoriesData.gaugeFactories[_gaugeType];
+         require(_factory != address(0), "ZA");
+@@ -577,4 +576,4 @@ contract GaugeManager is OwnableUpgradeable, ReentrancyGuardUpgradeable {
+         IAlgebraCommunityVault(communityVault).acceptAlgebraFeeChangeProposal(newAlgebraFee);
+     }
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/contracts/GaugeV2.sol b/contracts/GaugeV2.sol
+index d301ee3..f25d188 100644
+--- a/contracts/GaugeV2.sol
++++ b/contracts/GaugeV2.sol
+@@ -46,6 +46,8 @@ contract GaugeV2 is ReentrancyGuard, Ownable {
+ 
+     address public genesisPool;
+     address public genesisManager;
++    uint256 public genesisMaturityTime;
++    uint256 public genesisRewardPerTokenStored;
+ 
+     mapping(address => uint256) public userRewardPerTokenPaid;
+     mapping(address => uint256) public rewards;
+@@ -196,7 +198,16 @@ contract GaugeV2 is ReentrancyGuard, Ownable {
+ 
+     ///@notice see earned rewards for user
+     function earned(address account) public view returns (uint256) {
+-        return rewards[account] + _balanceOf(account) * (rewardPerToken() - userRewardPerTokenPaid[account]) / 1e18;  
++        uint256 _rewardPerToken = rewardPerToken();
++        uint256 genesisBalance = 0;
++        if(genesisPool != address(0)) genesisBalance = IGenesisPool(genesisPool).balanceOf(account);
++        uint256 gaugeBalance = _balances[account];
++        uint256 genesisPaid = userRewardPerTokenPaid[account] > genesisRewardPerTokenStored
++            ? userRewardPerTokenPaid[account]
++            : genesisRewardPerTokenStored;
++        return rewards[account]
++            + gaugeBalance * (_rewardPerToken - userRewardPerTokenPaid[account]) / 1e18
++            + genesisBalance * (_rewardPerToken - genesisPaid) / 1e18;
+     }
+ 
+     ///@notice get total reward for the duration
+@@ -226,6 +237,8 @@ contract GaugeV2 is ReentrancyGuard, Ownable {
+ 
+     // send whole liquidity as additional param
+     function _depositsForGenesis(address _tokenOwner, uint256 _timestamp, uint256 _totalAmount) internal updateReward(address(0)) {       
++        genesisRewardPerTokenStored = rewardPerTokenStored;
++        genesisMaturityTime = _timestamp;
+         TOKEN.safeTransferFrom(msg.sender, address(this), _totalAmount);
+         _totalSupply = _totalSupply + _totalAmount;
+         maturityTime[_tokenOwner] = _timestamp;
+@@ -271,8 +284,7 @@ contract GaugeV2 is ReentrancyGuard, Ownable {
+     ///@notice withdraw internal
+     function _withdraw(uint256 amount) internal nonReentrant isNotEmergency updateReward(msg.sender) {
+         require(amount > 0, "ZV");
+-        require(_balanceOf(msg.sender) > 0, "ZV");
+-        require(block.timestamp >= maturityTime[msg.sender], "!MATURE");
++        require(_balanceOf(msg.sender) >= amount, "ZV");
+ 
+         _totalSupply = _totalSupply - amount;
+         _deductBalance(amount);
+@@ -314,11 +326,16 @@ contract GaugeV2 is ReentrancyGuard, Ownable {
+         uint256 gensisBalance = 0;
+         if(genesisPool != address(0)) gensisBalance = IGenesisPool(genesisPool).balanceOf(msg.sender);
+ 
+-        uint256 genesisDeduction = gensisBalance <= _amount ? gensisBalance : _amount;
+-        uint256 gaugeDeduction =  _amount - genesisDeduction;
++        uint256 gaugeDeduction = _balances[msg.sender] >= _amount ? _amount : _balances[msg.sender];
++        uint256 genesisDeduction = _amount - gaugeDeduction;
++        if (genesisDeduction > 0) {
++            uint256 maturity = maturityTime[msg.sender] > 0 ? maturityTime[msg.sender] : genesisMaturityTime;
++            require(emergency || block.timestamp >= maturity, "!MATURE");
++            require(gensisBalance >= genesisDeduction, "ZV");
++        }
+ 
+         _balances[msg.sender] = _balances[msg.sender] - gaugeDeduction;
+-        if(genesisPool != address(0)){
++        if(genesisPool != address(0) && genesisDeduction > 0){
+             IGenesisPool(genesisPool).deductAmount(msg.sender, genesisDeduction);
+         }
+     }
+diff --git a/contracts/RewardsDistributor.sol b/contracts/RewardsDistributor.sol
+index ff478dc..9b64379 100644
+--- a/contracts/RewardsDistributor.sol
++++ b/contracts/RewardsDistributor.sol
+@@ -231,6 +231,9 @@ contract RewardsDistributor is IRewardsDistributor {
+                 IVotingEscrow.LockedBalance memory _locked = IVotingEscrow(_voting_escrow).locked(_tokenId);
+                 if(_locked.end < block.timestamp && !_locked.isPermanent){
+                     address _nftOwner = IVotingEscrow(_voting_escrow).ownerOf(_tokenId);
++                    if (address(avm) != address(0) && avm.tokenIdToAVMId(_tokenId) != 0) {
++                        _nftOwner = avm.getOriginalOwner(_tokenId);
++                    }
+                     IERC20(token).transfer(_nftOwner, amount);
+                 } else {
+                     IVotingEscrow(_voting_escrow).deposit_for(_tokenId, amount);
+diff --git a/contracts/RouterV2.sol b/contracts/RouterV2.sol
+index 044e90e..0fb61aa 100644
+--- a/contracts/RouterV2.sol
++++ b/contracts/RouterV2.sol
+@@ -496,8 +496,19 @@ contract RouterV2 {
+ 
+     // **** SWAP ****
+     // requires the initial amount to have already been sent to the first pair
++    function _routeRecipient(route[] memory routes, uint i, address _to) internal view returns (address) {
++        if (i == routes.length - 1) {
++            return _to;
++        }
++        if (routes[i + 1].concentrated) {
++            return address(this);
++        }
++        return pairFor(routes[i + 1].from, routes[i + 1].to, routes[i + 1].stable);
++    }
++
+     function _swap(uint[] memory amounts, route[] memory routes, address _to) internal virtual {
+         for (uint i = 0; i < routes.length; i++) {
++            address recipient = _routeRecipient(routes, i, _to);
+             if(routes[i].concentrated){
+                 if (IERC20(routes[i].from).allowance(address(this), swapRouter) < amounts[i]) {
+                     IERC20(routes[i].from).approve(swapRouter, amounts[i]);
+@@ -507,7 +518,7 @@ contract RouterV2 {
+                     tokenIn: routes[i].from,
+                     tokenOut: routes[i].to,
+                     deployer: IAlgebraPoolAPIStorage(algebraPoolAPIStorage).pairToDeployer(routes[i].pair),
+-                    recipient: routes[i].receiver,
++                    recipient: recipient,
+                     deadline: block.timestamp + 600,
+                     amountIn: amounts[i],
+                     amountOutMinimum: 0,
+@@ -521,11 +532,11 @@ contract RouterV2 {
+                 uint amountOut = amounts[i + 1];
+                 (uint amount0Out, uint amount1Out) = routes[i].from == token0 ? (uint(0), amountOut) : (amountOut, uint(0));
+                 IBaseV1Pair(pairFor(routes[i].from, routes[i].to, routes[i].stable)).swap(
+-                    amount0Out, amount1Out, routes[i].receiver, new bytes(0)
++                    amount0Out, amount1Out, recipient, new bytes(0)
+                 );
+             }
+ 
+-            emit Swap(msg.sender, amounts[i], routes[i].from, routes[i].receiver, routes[i].stable); 
++            emit Swap(msg.sender, amounts[i], routes[i].from, recipient, routes[i].stable);
+         }
+     }
+ 
+@@ -544,6 +555,8 @@ contract RouterV2 {
+         routes[0].to = tokenTo;
+         routes[0].stable = stable;
+         routes[0].concentrated = concentrated;
++        routes[0].pair = concentrated ? algebraFactory.poolByPair(tokenFrom, tokenTo) : pairFor(tokenFrom, tokenTo, stable);
++        require(routes[0].pair != address(0), "PAIR_NOT_FOUND");
+         amounts = getAmountsOut(amountIn, routes);
+         require(amounts[amounts.length - 1] >= amountOutMin, 'IOA');
+         if(!routes[0].concentrated) {
+@@ -668,6 +681,7 @@ contract RouterV2 {
+         address to,
+         uint deadline
+     ) public ensure(deadline) returns (uint amountToken, uint amountETH) {
++        uint balanceBefore = erc20(token).balanceOf(address(this));
+         (amountToken, amountETH) = removeLiquidity(
+             token,
+             address(wETH),
+@@ -678,7 +692,8 @@ contract RouterV2 {
+             address(this),
+             deadline
+         );
+-        _safeTransfer(token, to, erc20(token).balanceOf(address(this)));
++        uint balanceAfter = erc20(token).balanceOf(address(this));
++        _safeTransfer(token, to, balanceAfter - balanceBefore);
+         wETH.withdraw(amountETH);
+         _safeTransferETH(to, amountETH);
+     }
+@@ -776,11 +791,12 @@ contract RouterV2 {
+         ensure(deadline)
+     {
+         require(routes[routes.length - 1].to == address(wETH), 'INP');
++        uint balanceBefore = erc20(address(wETH)).balanceOf(address(this));
+         _safeTransferFrom(
+             routes[0].from, msg.sender, pairFor(routes[0].from, routes[0].to, routes[0].stable), amountIn
+         );
+         _swapSupportingFeeOnTransferTokens(routes, address(this));
+-        uint amountOut = erc20(address(wETH)).balanceOf(address(this));
++        uint amountOut = erc20(address(wETH)).balanceOf(address(this)).sub(balanceBefore);
+         require(amountOut >= amountOutMin, 'IOA');
+         wETH.withdraw(amountOut);
+         _safeTransferETH(to, amountOut);
+diff --git a/contracts/interfaces/IAutomatedVotingManager.sol b/contracts/interfaces/IAutomatedVotingManager.sol
+index cf07b8f..54a164b 100644
+--- a/contracts/interfaces/IAutomatedVotingManager.sol
++++ b/contracts/interfaces/IAutomatedVotingManager.sol
+@@ -4,6 +4,8 @@ pragma solidity 0.8.13;
+ interface IAutomatedVotingManager {
+     function originalOwner(uint256 tokenId) external view returns(address);
+     function setOriginalOwner(uint256 tokenId, address owner) external;
++    function tokenIdToAVMId(uint256 tokenId) external view returns(uint256);
++    function getOriginalOwner(uint256 tokenId) external view returns(address);
+     function topN() external view returns(uint256);
+     function tokenIndexes(uint256 _index) external view returns (uint256);
+     function tokenIdsLength() external view returns(uint256);

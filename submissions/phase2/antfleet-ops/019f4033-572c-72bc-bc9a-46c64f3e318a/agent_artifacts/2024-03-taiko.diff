@@ -1,0 +1,80 @@
+diff --git a/packages/protocol/contracts/signal/SignalService.sol b/packages/protocol/contracts/signal/SignalService.sol
+index 499d496..2829bf8 100644
+--- a/packages/protocol/contracts/signal/SignalService.sol
++++ b/packages/protocol/contracts/signal/SignalService.sol
+@@ -99,24 +99,35 @@ contract SignalService is EssentialContract, ISignalService {
+         bytes32 signal = _signal;
+         bytes32 value = _signal;
+         address signalService = resolve(chainId, "signal_service", false);
++        uint64[] memory hopChainIds = new uint64[](hopProofs.length + 1);
++        hopChainIds[0] = chainId;
++        uint256 numHopChainIds = 1;
+ 
+         HopProof memory hop;
+         for (uint256 i; i < hopProofs.length; ++i) {
+             hop = hopProofs[i];
+-
+-            bytes32 signalRoot = _verifyHopProof(chainId, app, signal, value, hop, signalService);
+             bool isLastHop = i == hopProofs.length - 1;
+ 
++            address nextSignalService;
+             if (isLastHop) {
+                 if (hop.chainId != block.chainid) revert SS_INVALID_LAST_HOP_CHAINID();
+-                signalService = address(this);
++                nextSignalService = address(this);
+             } else {
+                 if (hop.chainId == 0 || hop.chainId == block.chainid) {
+                     revert SS_INVALID_MID_HOP_CHAINID();
+                 }
+-                signalService = resolve(hop.chainId, "signal_service", false);
++                nextSignalService = resolve(hop.chainId, "signal_service", false);
+             }
+ 
++            for (uint256 j; j < numHopChainIds; ++j) {
++                if (hop.chainId == hopChainIds[j]) {
++                    if (isLastHop) revert SS_INVALID_LAST_HOP_CHAINID();
++                    revert SS_INVALID_MID_HOP_CHAINID();
++                }
++            }
++            hopChainIds[numHopChainIds++] = hop.chainId;
++
++            bytes32 signalRoot = _verifyHopProof(chainId, app, signal, value, hop, signalService);
+             bool isFullProof = hop.accountProof.length > 0;
+ 
+             _cacheChainData(hop, chainId, hop.blockId, signalRoot, isFullProof, isLastHop);
+@@ -125,6 +136,7 @@ contract SignalService is EssentialContract, ISignalService {
+             signal = signalForChainData(chainId, kind, hop.blockId);
+             value = hop.rootHash;
+             chainId = hop.chainId;
++            signalService = nextSignalService;
+             app = signalService;
+         }
+ 
+diff --git a/packages/protocol/contracts/tokenvault/adapters/USDCAdapter.sol b/packages/protocol/contracts/tokenvault/adapters/USDCAdapter.sol
+index 84c5669..e6d2437 100644
+--- a/packages/protocol/contracts/tokenvault/adapters/USDCAdapter.sol
++++ b/packages/protocol/contracts/tokenvault/adapters/USDCAdapter.sol
+@@ -45,7 +45,7 @@ contract USDCAdapter is BridgedERC20Base {
+     }
+ 
+     function _burnToken(address _from, uint256 _amount) internal override {
+-        usdc.transferFrom(_from, address(this), _amount);
++        if (!usdc.transferFrom(_from, address(this), _amount)) revert BB_INVALID_PARAMS();
+         usdc.burn(_amount);
+     }
+ }
+diff --git a/packages/protocol/contracts/verifiers/SgxVerifier.sol b/packages/protocol/contracts/verifiers/SgxVerifier.sol
+index 8ea73fc..9535f24 100644
+--- a/packages/protocol/contracts/verifiers/SgxVerifier.sol
++++ b/packages/protocol/contracts/verifiers/SgxVerifier.sol
+@@ -226,6 +226,10 @@ contract SgxVerifier is EssentialContract, IVerifier {
+     function _replaceInstance(uint256 id, address oldInstance, address newInstance) private {
+         // Replacing an instance means, it went through a cooldown (if added by on-chain RA) so no
+         // need to have a cooldown
++        if (newInstance == address(0)) revert SGX_INVALID_INSTANCE();
++        if (addressRegistered[newInstance]) revert SGX_ALREADY_ATTESTED();
++
++        addressRegistered[newInstance] = true;
+         instances[id] = Instance(newInstance, uint64(block.timestamp));
+         emit InstanceAdded(id, newInstance, oldInstance, block.timestamp);
+     }

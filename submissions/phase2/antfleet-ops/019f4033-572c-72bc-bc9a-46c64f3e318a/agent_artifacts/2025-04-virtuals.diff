@@ -1,0 +1,233 @@
+diff --git a/contracts/AgentRewardV2.sol b/contracts/AgentRewardV2.sol
+index 56e29ed..1b33166 100644
+--- a/contracts/AgentRewardV2.sol
++++ b/contracts/AgentRewardV2.sol
+@@ -176,6 +176,8 @@ contract AgentRewardV2 is IAgentReward, Initializable, AccessControl, TokenSaver
+             );
+         }
+ 
++        require(agentCount > 0 && grandTotalStaked > 0, "No eligible agents");
++
+         _mainRewards.push(MainReward(SafeCast.toUint32(block.number), amount, agentCount, grandTotalStaked));
+         emit NewMainReward(mainPos, amount, agentCount, grandTotalStaked);
+     }
+@@ -327,6 +329,9 @@ contract AgentRewardV2 is IAgentReward, Initializable, AccessControl, TokenSaver
+ 
+         uint256 tokens = token.getPastBalanceOf(account, mainReward.blockNumber);
+         uint256 votes = IERC5805(stakingAddress).getPastVotes(delegatee, mainReward.blockNumber);
++        if (validatorGroupRewards == 0 || tokens == 0 || votes == 0) {
++            return 0;
++        }
+ 
+         return (((validatorGroupRewards * tokens) / votes) * uint256(settings.stakerShares)) / DENOMINATOR;
+     }
+diff --git a/contracts/AgentRewardV3.sol b/contracts/AgentRewardV3.sol
+index 98b31b5..16d4c5d 100644
+--- a/contracts/AgentRewardV3.sol
++++ b/contracts/AgentRewardV3.sol
+@@ -123,20 +123,22 @@ contract AgentRewardV3 is IAgentRewardV3, Initializable, AccessControl, TokenSav
+     ) public onlyGov {
+         require(amount > 0, "Invalid amount");
+ 
+-        IERC20(rewardToken).safeTransferFrom(_msgSender(), address(this), amount);
+-
+         RewardSettingsCheckpointsV2.RewardSettings memory settings = getRewardSettings();
+-
+-        uint256 protocolAmount = shouldShareWithProtocol ? _distributeProtocolRewards(amount) : 0;
+-
+-        uint256 balance = amount - protocolAmount;
+         uint256 rewardIndex = _rewards.length;
+         uint virtualCount = virtualIds.length;
+         uint256[] memory lpValues = new uint256[](virtualCount);
++        IAgentNft nft = IAgentNft(agentNft);
+ 
+         uint256 totalLPValues = 0;
+         for (uint i = 0; i < virtualCount; i++) {
+-            lpValues[i] = getLPValue(virtualIds[i]);
++            uint256 virtualId = virtualIds[i];
++            if (
++                nft.totalStaked(virtualId) == 0 ||
++                IAgentDAO(nft.virtualInfo(virtualId).dao).proposalCount() == 0
++            ) {
++                continue;
++            }
++            lpValues[i] = getLPValue(virtualId);
+             totalLPValues += lpValues[i];
+         }
+ 
+@@ -144,6 +146,11 @@ contract AgentRewardV3 is IAgentRewardV3, Initializable, AccessControl, TokenSav
+             revert("Invalid LP values");
+         }
+ 
++        IERC20(rewardToken).safeTransferFrom(_msgSender(), address(this), amount);
++
++        uint256 protocolAmount = shouldShareWithProtocol ? _distributeProtocolRewards(amount) : 0;
++        uint256 balance = amount - protocolAmount;
++
+         _rewards.push(Reward(block.number, balance, lpValues, virtualIds));
+ 
+         emit NewReward(rewardIndex, virtualIds);
+@@ -151,6 +158,9 @@ contract AgentRewardV3 is IAgentRewardV3, Initializable, AccessControl, TokenSav
+         // We expect around 3-5 virtuals here, the loop should not exceed gas limit
+         for (uint i = 0; i < virtualCount; i++) {
+             uint256 virtualId = virtualIds[i];
++            if (lpValues[i] == 0) {
++                continue;
++            }
+             _distributeAgentReward(virtualId, rewardIndex, (lpValues[i] * balance) / totalLPValues, settings);
+         }
+     }
+@@ -169,6 +179,7 @@ contract AgentRewardV3 is IAgentRewardV3, Initializable, AccessControl, TokenSav
+         uint256 stakerAmount = (amount * settings.stakerShares) / DENOMINATOR;
+ 
+         uint256 totalProposals = IAgentDAO(nft.virtualInfo(virtualId).dao).proposalCount();
++        require(totalStaked > 0 && totalProposals > 0, "No eligible rewards");
+ 
+         _agentRewards[virtualId].push(
+             AgentReward(agentRewardId, rewardIndex, stakerAmount, amount - stakerAmount, totalProposals, totalStaked)
+@@ -200,6 +211,9 @@ contract AgentRewardV3 is IAgentRewardV3, Initializable, AccessControl, TokenSav
+         IAgentDAO dao = IAgentDAO(IAgentNft(agentNft).virtualInfo(virtualId).dao);
+         for (uint i = claim.rewardCount; i < numRewards; i++) {
+             AgentReward memory agentReward = getAgentReward(virtualId, i);
++            if (agentReward.totalStaked == 0 || agentReward.totalProposals == 0) {
++                continue;
++            }
+             Reward memory reward = getReward(agentReward.rewardIndex);
+             address delegatee = veToken.getPastDelegates(account, reward.blockNumber);
+             uint256 uptime = dao.getPastScore(delegatee, reward.blockNumber);
+@@ -221,6 +235,9 @@ contract AgentRewardV3 is IAgentRewardV3, Initializable, AccessControl, TokenSav
+         IAgentDAO dao = IAgentDAO(IAgentNft(agentNft).virtualInfo(virtualId).dao);
+         for (uint i = claim.rewardCount; i < numRewards; i++) {
+             AgentReward memory agentReward = getAgentReward(virtualId, i);
++            if (agentReward.totalStaked == 0 || agentReward.totalProposals == 0) {
++                continue;
++            }
+             Reward memory reward = getReward(agentReward.rewardIndex);
+             uint256 uptime = dao.getPastScore(account, reward.blockNumber);
+             uint256 votes = veToken.getPastVotes(account, reward.blockNumber);
+diff --git a/contracts/contribution/ServiceNft.sol b/contracts/contribution/ServiceNft.sol
+index 3ea7e8c..3c76837 100644
+--- a/contracts/contribution/ServiceNft.sol
++++ b/contracts/contribution/ServiceNft.sol
+@@ -88,9 +88,15 @@ contract ServiceNft is
+     }
+ 
+     function updateImpact(uint256 virtualId, uint256 proposalId) public {
++        IAgentNft.VirtualInfo memory info = IAgentNft(personaNft).virtualInfo(virtualId);
++        require(_msgSender() == info.dao, "Caller is not VIRTUAL DAO");
++
+         // Calculate impact
+         // Get current service maturity
+         uint256 prevServiceId = _coreServices[virtualId][_cores[proposalId]];
++        if (prevServiceId == proposalId) {
++            return;
++        }
+         uint256 rawImpact = (_maturities[proposalId] > _maturities[prevServiceId])
+             ? _maturities[proposalId] - _maturities[prevServiceId]
+             : 0;
+diff --git a/contracts/genesis/Genesis.sol b/contracts/genesis/Genesis.sol
+index c7ce3d0..14b570c 100644
+--- a/contracts/genesis/Genesis.sol
++++ b/contracts/genesis/Genesis.sol
+@@ -296,7 +296,7 @@ contract Genesis is ReentrancyGuard, AccessControlUpgradeable {
+ 
+         // save the amount of agent tokens to claim
+         for (uint256 i = 0; i < distributeAgentTokenUserAddresses.length; i++) {
+-            claimableAgentTokens[distributeAgentTokenUserAddresses[i]] = distributeAgentTokenUserAmounts[i];
++            claimableAgentTokens[distributeAgentTokenUserAddresses[i]] += distributeAgentTokenUserAmounts[i];
+         }
+ 
+         emit GenesisSucceeded(genesisId);
+diff --git a/contracts/token/Airdrop.sol b/contracts/token/Airdrop.sol
+index 134a241..1d6d650 100644
+--- a/contracts/token/Airdrop.sol
++++ b/contracts/token/Airdrop.sol
+@@ -16,6 +16,14 @@ contract Airdrop {
+         uint256[] calldata _amounts,
+         uint256 _total
+     ) external {
++        require(_recipients.length == _amounts.length, "Invalid input");
++
++        uint256 total;
++        for (uint256 i = 0; i < _amounts.length; i++) {
++            total += _amounts[i];
++        }
++        require(total == _total, "Invalid total");
++
+         // bytes selector for transferFrom(address,address,uint256)
+         bytes4 transferFrom = 0x23b872dd;
+         // bytes selector for transfer(address,uint256)
+diff --git a/contracts/virtualPersona/AgentFactoryV4.sol b/contracts/virtualPersona/AgentFactoryV4.sol
+index 5a7accd..583bed2 100644
+--- a/contracts/virtualPersona/AgentFactoryV4.sol
++++ b/contracts/virtualPersona/AgentFactoryV4.sol
+@@ -97,6 +97,7 @@ contract AgentFactoryV4 is IAgentFactoryV4, Initializable, AccessControl, Pausab
+     // The follow 2 variables maps only custom ERC20 to agent applications
+     mapping(address => uint256) private _tokenApplication;
+     mapping(uint256 => address) private _applicationToken;
++    mapping(uint256 => uint256) private _applicationTokenAmount;
+ 
+     ///////////////////////////////////////////////////////////////
+ 
+@@ -195,7 +196,9 @@ contract AgentFactoryV4 is IAgentFactoryV4, Initializable, AccessControl, Pausab
+ 
+         address customToken = _applicationToken[id];
+         if (customToken != address(0)) {
+-            IERC20(customToken).safeTransfer(application.proposer, IERC20(customToken).balanceOf(address(this)));
++            uint256 customTokenAmount = _applicationTokenAmount[id];
++            _applicationTokenAmount[id] = 0;
++            IERC20(customToken).safeTransfer(application.proposer, customTokenAmount);
+ 
+             _tokenApplication[customToken] = 0;
+             _applicationToken[id] = address(0);
+@@ -223,20 +226,29 @@ contract AgentFactoryV4 is IAgentFactoryV4, Initializable, AccessControl, Pausab
+             IAgentToken(token).addInitialLiquidity(address(this));
+         } else {
+             // Custom token
++            uint256 customTokenAmount = _applicationTokenAmount[id];
++            require(customTokenAmount > 0, "No custom token amount");
++            _applicationTokenAmount[id] = 0;
++
+             lp = _createPair(token);
+-            IERC20(token).forceApprove(_uniswapRouter, type(uint256).max);
++            IERC20(token).forceApprove(_uniswapRouter, customTokenAmount);
+             IERC20(assetToken).forceApprove(_uniswapRouter, initialAmount);
+             // Add the liquidity:
+-            IUniswapV2Router02(_uniswapRouter).addLiquidity(
++            (uint256 amountToken, , ) = IUniswapV2Router02(_uniswapRouter).addLiquidity(
+                 token,
+                 assetToken,
+-                IERC20(token).balanceOf(address(this)),
++                customTokenAmount,
+                 initialAmount,
+                 0,
+                 0,
+                 address(this),
+                 block.timestamp
+             );
++            IERC20(token).forceApprove(_uniswapRouter, 0);
++            IERC20(assetToken).forceApprove(_uniswapRouter, 0);
++            if (customTokenAmount > amountToken) {
++                IERC20(token).safeTransfer(application.proposer, customTokenAmount - amountToken);
++            }
+         }
+ 
+         // C3
+@@ -473,13 +485,17 @@ contract AgentFactoryV4 is IAgentFactoryV4, Initializable, AccessControl, Pausab
+ 
+         require(initialLP > 0, "InitialLP must be greater than 0");
+ 
++        uint256 tokenBalanceBefore = IERC20(tokenAddr).balanceOf(address(this));
+         IERC20(tokenAddr).safeTransferFrom(sender, address(this), initialLP);
++        uint256 tokenAmountReceived = IERC20(tokenAddr).balanceOf(address(this)) - tokenBalanceBefore;
++        require(tokenAmountReceived > 0, "No custom tokens received");
+ 
+         IERC20(assetToken).safeTransferFrom(sender, address(this), applicationThreshold);
+ 
+         uint256 id = _nextId++;
+         _tokenApplication[tokenAddr] = id;
+         _applicationToken[id] = tokenAddr;
++        _applicationTokenAmount[id] = tokenAmountReceived;
+ 
+         Application memory application = Application(
+             IAgentToken(tokenAddr).name(),
