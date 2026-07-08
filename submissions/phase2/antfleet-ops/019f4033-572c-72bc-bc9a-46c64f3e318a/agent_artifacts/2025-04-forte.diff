@@ -1,0 +1,49 @@
+diff --git a/src/Float128.sol b/src/Float128.sol
+index 7637d83..8709106 100644
+--- a/src/Float128.sol
++++ b/src/Float128.sol
+@@ -699,6 +699,7 @@ library Float128 {
+         uint aMan;
+         uint256 roundedDownResult;
+         bool aL;
++        if ((packedFloat.unwrap(a) & MANTISSA_MASK) == 0) return packedFloat.wrap(0);
+         assembly {
+             if and(a, MANTISSA_SIGN_MASK) {
+                 let ptr := mload(0x40) // Get free memory pointer
+@@ -708,9 +709,6 @@ library Float128 {
+                 mstore(add(ptr, 0x44), "float128: squareroot of negative")
+                 revert(ptr, 0x64) // Revert data length is 4 bytes for selector and 3 slots of 0x20 bytes
+             }
+-            if iszero(a) {
+-                stop()
+-            }
+             aL := gt(and(a, MANTISSA_L_FLAG_MASK), 0)
+             aMan := and(a, MANTISSA_MASK)
+             aExp := shr(EXPONENT_BIT, and(a, EXPONENT_MASK))
+diff --git a/src/Ln.sol b/src/Ln.sol
+index 4c73bbc..2623083 100644
+--- a/src/Ln.sol
++++ b/src/Ln.sol
+@@ -15,6 +15,7 @@ library Ln {
+ 
+     // These constants are used in an inline assembly block and must direct number constants
+     uint constant MANTISSA_MASK = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
++    uint constant MANTISSA_SIGN_MASK = 0x1000000000000000000000000000000000000000000000000000000000000;
+     uint constant MANTISSA_L_FLAG_MASK = 0x2000000000000000000000000000000000000000000000000000000000000;
+     uint constant EXPONENT_MASK = 0xfffc000000000000000000000000000000000000000000000000000000000000;
+     uint constant ZERO_OFFSET = 8192;
+@@ -65,6 +66,14 @@ library Ln {
+         int exponent;
+         bool inputL;
+         assembly {
++            if or(iszero(and(input, MANTISSA_MASK)), and(input, MANTISSA_SIGN_MASK)) {
++                let ptr := mload(0x40)
++                mstore(ptr, 0x08c379a000000000000000000000000000000000000000000000000000000000)
++                mstore(add(ptr, 0x04), 0x20)
++                mstore(add(ptr, 0x24), 26)
++                mstore(add(ptr, 0x44), "float128: non-positive log")
++                revert(ptr, 0x64)
++            }
+             inputL := gt(and(input, MANTISSA_L_FLAG_MASK), 0)
+             mantissa := and(input, MANTISSA_MASK)
+             exponent := sub(shr(EXPONENT_BIT, and(input, EXPONENT_MASK)), ZERO_OFFSET)

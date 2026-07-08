@@ -1,0 +1,135 @@
+diff --git a/src/HypoVault.sol b/src/HypoVault.sol
+index bee1b8a..06aff71 100644
+--- a/src/HypoVault.sol
++++ b/src/HypoVault.sol
+@@ -315,17 +315,21 @@ contract HypoVault is ERC20Minimal, Multicall, Ownable {
+ 
+         DepositEpochState memory _depositEpochState = depositEpochState[epoch];
+ 
+-        uint256 userAssetsDeposited = Math.mulDiv(
+-            queuedDepositAmount,
+-            _depositEpochState.assetsFulfilled,
+-            _depositEpochState.assetsDeposited
+-        );
+-
+-        uint256 sharesReceived = Math.mulDiv(
+-            userAssetsDeposited,
+-            _depositEpochState.sharesReceived,
+-            _depositEpochState.assetsFulfilled
+-        );
++        uint256 userAssetsDeposited;
++        uint256 sharesReceived;
++        if (_depositEpochState.assetsFulfilled > 0) {
++            userAssetsDeposited = Math.mulDiv(
++                queuedDepositAmount,
++                _depositEpochState.assetsFulfilled,
++                _depositEpochState.assetsDeposited
++            );
++
++            sharesReceived = Math.mulDiv(
++                userAssetsDeposited,
++                _depositEpochState.sharesReceived,
++                _depositEpochState.assetsFulfilled
++            );
++        }
+ 
+         // shares from pending deposits are already added to the supply at the start of every new epoch
+         _mintVirtual(user, sharesReceived);
+@@ -352,20 +356,28 @@ contract HypoVault is ERC20Minimal, Multicall, Ownable {
+ 
+         WithdrawalEpochState memory _withdrawalEpochState = withdrawalEpochState[epoch];
+ 
+-        // prorated shares to fulfill = amount * fulfilled shares / total shares withdrawn
+-        uint256 sharesToFulfill = (uint256(pendingWithdrawal.amount) *
+-            _withdrawalEpochState.sharesFulfilled) / _withdrawalEpochState.sharesWithdrawn;
+-        // assets to withdraw = prorated shares to withdraw * assets fulfilled / total shares fulfilled
+-        uint256 assetsToWithdraw = Math.mulDiv(
+-            sharesToFulfill,
+-            _withdrawalEpochState.assetsReceived,
+-            _withdrawalEpochState.sharesFulfilled
+-        );
++        uint256 sharesToFulfill;
++        uint256 assetsToWithdraw;
++        if (_withdrawalEpochState.sharesFulfilled > 0) {
++            // prorated shares to fulfill = amount * fulfilled shares / total shares withdrawn
++            sharesToFulfill = (uint256(pendingWithdrawal.amount) *
++                _withdrawalEpochState.sharesFulfilled) / _withdrawalEpochState.sharesWithdrawn;
++            // assets to withdraw = prorated shares to withdraw * assets fulfilled / total shares fulfilled
++            assetsToWithdraw = Math.mulDiv(
++                sharesToFulfill,
++                _withdrawalEpochState.assetsReceived,
++                _withdrawalEpochState.sharesFulfilled
++            );
++        }
+ 
+         reservedWithdrawalAssets -= assetsToWithdraw;
+ 
+-        uint256 withdrawnBasis = (uint256(pendingWithdrawal.basis) *
+-            _withdrawalEpochState.sharesFulfilled) / _withdrawalEpochState.sharesWithdrawn;
++        uint256 withdrawnBasis;
++        if (_withdrawalEpochState.sharesFulfilled > 0) {
++            withdrawnBasis =
++                (uint256(pendingWithdrawal.basis) * _withdrawalEpochState.sharesFulfilled) /
++                _withdrawalEpochState.sharesWithdrawn;
++        }
+         uint256 performanceFee = (uint256(
+             Math.max(0, int256(assetsToWithdraw) - int256(withdrawnBasis))
+         ) * performanceFeeBps) / 10_000;
+diff --git a/src/accountants/PanopticVaultAccountant.sol b/src/accountants/PanopticVaultAccountant.sol
+index e42bcf4..10772fa 100644
+--- a/src/accountants/PanopticVaultAccountant.sol
++++ b/src/accountants/PanopticVaultAccountant.sol
+@@ -120,6 +120,8 @@ contract PanopticVaultAccountant is Ownable {
+             uint256[2][] memory positionBalanceArray;
+             int256 poolExposure0;
+             int256 poolExposure1;
++            int256 walletBalance0;
++            int256 walletBalance1;
+             {
+                 LeftRightUnsigned shortPremium;
+                 LeftRightUnsigned longPremium;
+@@ -179,6 +181,7 @@ contract PanopticVaultAccountant is Ownable {
+ 
+             bool skipToken0 = false;
+             bool skipToken1 = false;
++            if (address(pools[i].token0) == address(pools[i].token1)) skipToken1 = true;
+ 
+             // optimized for small number of pools
+             for (uint256 j = 0; j < underlyingTokens.length; j++) {
+@@ -195,11 +198,11 @@ contract PanopticVaultAccountant is Ownable {
+             }
+ 
+             if (!skipToken0)
+-                poolExposure0 += address(pools[i].token0) ==
++                walletBalance0 += address(pools[i].token0) ==
+                     address(0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE)
+                     ? int256(address(_vault).balance)
+                     : int256(pools[i].token0.balanceOf(_vault));
+-            if (!skipToken1) poolExposure1 += int256(pools[i].token1.balanceOf(_vault));
++            if (!skipToken1) walletBalance1 += int256(pools[i].token1.balanceOf(_vault));
+ 
+             uint256 collateralBalance = pools[i].pool.collateralToken0().balanceOf(_vault);
+             poolExposure0 += int256(
+@@ -227,6 +230,7 @@ contract PanopticVaultAccountant is Ownable {
+                 );
+ 
+                 poolExposure0 = PanopticMath.convert0to1(poolExposure0, conversionPrice);
++                walletBalance0 = PanopticMath.convert0to1(walletBalance0, conversionPrice);
+             }
+ 
+             if (address(pools[i].token1) != underlyingToken) {
+@@ -244,10 +248,12 @@ contract PanopticVaultAccountant is Ownable {
+                 );
+ 
+                 poolExposure1 = PanopticMath.convert1to0(poolExposure1, conversionPrice);
++                walletBalance1 = PanopticMath.convert1to0(walletBalance1, conversionPrice);
+             }
+ 
+-            // debt in pools with negative exposure does not need to be paid back
+-            nav += uint256(Math.max(poolExposure0 + poolExposure1, 0));
++            // Pool debt is non-recourse, but it must not erase idle wallet balances.
++            nav += uint256(walletBalance0 + walletBalance1) +
++                uint256(Math.max(poolExposure0 + poolExposure1, 0));
+         }
+ 
+         // underlying cannot be native (0x000/0xeee)

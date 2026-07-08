@@ -1,0 +1,71 @@
+diff --git a/smart-contracts/src/libraries/Errors.sol b/smart-contracts/src/libraries/Errors.sol
+index 5625d18..3201715 100644
+--- a/smart-contracts/src/libraries/Errors.sol
++++ b/smart-contracts/src/libraries/Errors.sol
+@@ -249,6 +249,13 @@ library Errors {
+      */
+     error StorageModule_OrderDoesNotExist(bytes32 orderHash);
+ 
++    /**
++     * @dev Thrown when an order hash already exists.
++     *
++     * @param orderHash Hash of the rental order.
++     */
++    error StorageModule_OrderAlreadyExists(bytes32 orderHash);
++
+     /**
+      * @dev Thrown when attempting to enable a hook using a non-contract address.
+      *
+diff --git a/smart-contracts/src/modules/Storage.sol b/smart-contracts/src/modules/Storage.sol
+index 1e46bcb..8fbb6f8 100644
+--- a/smart-contracts/src/modules/Storage.sol
++++ b/smart-contracts/src/modules/Storage.sol
+@@ -190,6 +190,11 @@ contract Storage is Proxiable, Module, StorageBase {
+         bytes32 orderHash,
+         RentalAssetUpdate[] memory rentalAssetUpdates
+     ) external onlyByProxy permissioned {
++        // The order must not already be active.
++        if (orders[orderHash]) {
++            revert Errors.StorageModule_OrderAlreadyExists(orderHash);
++        }
++
+         // Add the order to storage.
+         orders[orderHash] = true;
+ 
+diff --git a/smart-contracts/src/packages/Reclaimer.sol b/smart-contracts/src/packages/Reclaimer.sol
+index 8d21ea5..5108b19 100644
+--- a/smart-contracts/src/packages/Reclaimer.sol
++++ b/smart-contracts/src/packages/Reclaimer.sol
+@@ -30,7 +30,7 @@ abstract contract Reclaimer {
+      * @param recipient Address which will receive the token.
+      */
+     function _transferERC721(Item memory item, address recipient) private {
+-        IERC721(item.token).safeTransferFrom(address(this), recipient, item.identifier);
++        IERC721(item.token).transferFrom(address(this), recipient, item.identifier);
+     }
+ 
+     /**
+diff --git a/smart-contracts/src/packages/Signer.sol b/smart-contracts/src/packages/Signer.sol
+index 6edf32c..766bc38 100644
+--- a/smart-contracts/src/packages/Signer.sol
++++ b/smart-contracts/src/packages/Signer.sol
+@@ -188,6 +188,7 @@ abstract contract Signer {
+                     order.orderType,
+                     order.lender,
+                     order.renter,
++                    order.rentalWallet,
+                     order.startTimestamp,
+                     order.endTimestamp
+                 )
+@@ -232,8 +233,10 @@ abstract contract Signer {
+             keccak256(
+                 abi.encode(
+                     _ORDER_METADATA_TYPEHASH,
++                    metadata.orderType,
+                     metadata.rentDuration,
+-                    keccak256(abi.encodePacked(hookHashes))
++                    keccak256(abi.encodePacked(hookHashes)),
++                    metadata.emittedExtraData
+                 )
+             );
+     }

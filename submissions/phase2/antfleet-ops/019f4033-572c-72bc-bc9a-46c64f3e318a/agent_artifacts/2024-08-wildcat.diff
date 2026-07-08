@@ -1,0 +1,87 @@
+diff --git a/src/HooksFactory.sol b/src/HooksFactory.sol
+index 4e4ad55..caf6272 100644
+--- a/src/HooksFactory.sol
++++ b/src/HooksFactory.sol
+@@ -402,6 +402,9 @@ contract HooksFactory is SphereXProtectedRegisteredBase, ReentrancyGuard, IHooks
+     if (IWildcatArchController(_archController).isBlacklistedAsset(parameters.asset)) {
+       revert AssetBlacklisted();
+     }
++    if (!templateDetails.enabled) {
++      revert HooksTemplateNotAvailable();
++    }
+     address hooksInstance = parameters.hooks.hooksAddress();
+ 
+     if (!(address(bytes20(salt)) == msg.sender || bytes20(salt) == bytes20(0))) {
+diff --git a/src/market/WildcatMarketWithdrawals.sol b/src/market/WildcatMarketWithdrawals.sol
+index 3aeffd9..230ab41 100644
+--- a/src/market/WildcatMarketWithdrawals.sol
++++ b/src/market/WildcatMarketWithdrawals.sol
+@@ -202,13 +202,33 @@ contract WildcatMarketWithdrawals is WildcatMarketBase {
+       state,
+       accountAddress,
+       expiry,
+-      _runtimeConstant(0x44)
++      _runtimeConstant(0x44),
++      accountAddress
+     );
+     // Update stored state
+     _writeState(state);
+     return normalizedAmountWithdrawn;
+   }
+ 
++  function executeWithdrawalTo(
++    address recipient,
++    uint32 expiry
++  ) external nonReentrant sphereXGuardExternal returns (uint256) {
++    if (recipient == address(0)) revert_AccountBlocked();
++    if (_isSanctioned(recipient)) revert_AccountBlocked();
++
++    MarketState memory state = _getUpdatedState();
++    uint256 normalizedAmountWithdrawn = _executeWithdrawal(
++      state,
++      msg.sender,
++      expiry,
++      _runtimeConstant(0x44),
++      recipient
++    );
++    _writeState(state);
++    return normalizedAmountWithdrawn;
++  }
++
+   function executeWithdrawals(
+     address[] calldata accountAddresses,
+     uint32[] calldata expiries
+@@ -221,7 +241,13 @@ contract WildcatMarketWithdrawals is WildcatMarketBase {
+ 
+     for (uint256 i = 0; i < accountAddresses.length; i++) {
+       // Use calldatasize() for baseCalldataSize to indicate no data should be passed as `extraData`
+-      amounts[i] = _executeWithdrawal(state, accountAddresses[i], expiries[i], msg.data.length);
++      amounts[i] = _executeWithdrawal(
++        state,
++        accountAddresses[i],
++        expiries[i],
++        msg.data.length,
++        accountAddresses[i]
++      );
+     }
+     // Update stored state
+     _writeState(state);
+@@ -232,7 +258,8 @@ contract WildcatMarketWithdrawals is WildcatMarketBase {
+     MarketState memory state,
+     address accountAddress,
+     uint32 expiry,
+-    uint baseCalldataSize
++    uint baseCalldataSize,
++    address recipient
+   ) internal returns (uint256) {
+     WithdrawalBatch memory batch = _withdrawalData.batches[expiry];
+     // If the market is closed, allow withdrawal prior to expiry.
+@@ -272,7 +299,7 @@ contract WildcatMarketWithdrawals is WildcatMarketBase {
+         normalizedAmountWithdrawn
+       );
+     } else {
+-      asset.safeTransfer(accountAddress, normalizedAmountWithdrawn);
++      asset.safeTransfer(recipient, normalizedAmountWithdrawn);
+     }
+ 
+     emit_WithdrawalExecuted(expiry, accountAddress, normalizedAmountWithdrawn);

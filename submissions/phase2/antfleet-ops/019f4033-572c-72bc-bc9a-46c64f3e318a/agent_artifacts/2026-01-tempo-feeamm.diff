@@ -1,0 +1,246 @@
+diff --git a/contracts/FeeAMM.sol b/contracts/FeeAMM.sol
+index 7f0634a..afb94a0 100644
+--- a/contracts/FeeAMM.sol
++++ b/contracts/FeeAMM.sol
+@@ -15,6 +15,7 @@ contract FeeAMM {
+     uint256 public constant N = 9985;
+     uint256 public constant SCALE = 10_000;
+     uint256 public constant MIN_LIQUIDITY = 1000;
++    uint256 private unlocked = 1;
+ 
+     struct Pool {
+         uint128 reserveUserToken;
+@@ -60,10 +61,81 @@ contract FeeAMM {
+     mapping(bytes32 => uint256) public totalSupply;
+     mapping(bytes32 => mapping(address => uint256)) public liquidityBalances;
+ 
++    modifier nonReentrant() {
++        require(unlocked == 1, "LOCKED");
++        unlocked = 0;
++        _;
++        unlocked = 1;
++    }
++
+     function _requireU128(uint256 x) internal pure {
+         require(x <= type(uint128).max, "INVALID_AMOUNT");
+     }
+ 
++    function _checkedAddU128(uint128 x, uint256 y)
++        internal
++        pure
++        returns (uint128)
++    {
++        _requireU128(y);
++        uint256 z = uint256(x) + y;
++        require(z <= type(uint128).max, "INVALID_AMOUNT");
++        return uint128(z);
++    }
++
++    function _safeTransfer(
++        address token,
++        address to,
++        uint256 value
++    ) private {
++        (bool success, bytes memory data) = token.call(
++            abi.encodeWithSelector(IERC20.transfer.selector, to, value)
++        );
++        require(
++            success && (data.length == 0 || abi.decode(data, (bool))),
++            "TRANSFER_FAILED"
++        );
++    }
++
++    function _safeTransferFrom(
++        address token,
++        address from,
++        address to,
++        uint256 value
++    ) private {
++        (bool success, bytes memory data) = token.call(
++            abi.encodeWithSelector(IERC20.transferFrom.selector, from, to, value)
++        );
++        require(
++            success && (data.length == 0 || abi.decode(data, (bool))),
++            "TRANSFER_FROM_FAILED"
++        );
++    }
++
++    function _balanceOf(address token, address account)
++        private
++        view
++        returns (uint256)
++    {
++        (bool success, bytes memory data) = token.staticcall(
++            abi.encodeWithSelector(IERC20.balanceOf.selector, account)
++        );
++        require(success && data.length >= 32, "BALANCE_FAILED");
++        return abi.decode(data, (uint256));
++    }
++
++    function _safeTransferFromExact(
++        address token,
++        address from,
++        uint256 value
++    ) private {
++        uint256 balanceBefore = _balanceOf(token, address(this));
++        _safeTransferFrom(token, from, address(this), value);
++        uint256 balanceAfter = _balanceOf(token, address(this));
++        require(balanceAfter >= balanceBefore, "TRANSFER_FROM_FAILED");
++        require(balanceAfter - balanceBefore == value, "INVALID_AMOUNT");
++    }
++
+     function getPoolId(
+         address userToken,
+         address validatorToken
+@@ -96,13 +168,14 @@ contract FeeAMM {
+         address userToken,
+         address validatorToken,
+         uint256 amountIn
+-    ) external returns (uint256 amountOut) {
++    ) external nonReentrant returns (uint256 amountOut) {
++        _requireU128(amountIn);
++
+         bytes32 poolId = getPoolId(userToken, validatorToken);
+         Pool storage pool = pools[poolId];
+ 
+         amountOut = (amountIn * M) / SCALE;
+ 
+-        _requireU128(amountIn);
+         _requireU128(amountOut);
+ 
+         require(
+@@ -110,12 +183,17 @@ contract FeeAMM {
+             "INSUFFICIENT_LIQUIDITY"
+         );
+ 
+-        IERC20(userToken).transferFrom(msg.sender, address(this), amountIn);
++        uint128 reserveUserToken = _checkedAddU128(
++            pool.reserveUserToken,
++            amountIn
++        );
++
++        _safeTransferFromExact(userToken, msg.sender, amountIn);
+ 
+-        pool.reserveUserToken += uint128(amountIn);
++        pool.reserveUserToken = reserveUserToken;
+         pool.reserveValidatorToken -= uint128(amountOut);
+ 
+-        IERC20(validatorToken).transfer(msg.sender, amountOut);
++        _safeTransfer(validatorToken, msg.sender, amountOut);
+ 
+         emit FeeSwap(
+             userToken,
+@@ -131,8 +209,9 @@ contract FeeAMM {
+         address validatorToken,
+         uint256 amountOut,
+         address to
+-    ) external returns (uint256 amountIn) {
++    ) external nonReentrant returns (uint256 amountIn) {
+         require(amountOut != 0, "INVALID_AMOUNT");
++        _requireU128(amountOut);
+ 
+         bytes32 poolId = getPoolId(userToken, validatorToken);
+ 
+@@ -140,7 +219,6 @@ contract FeeAMM {
+ 
+         Pool storage pool = pools[poolId];
+ 
+-        _requireU128(amountOut);
+         _requireU128(amountIn);
+ 
+         if (
+@@ -148,18 +226,17 @@ contract FeeAMM {
+         ) {
+             revert("INSUFFICIENT_RESERVES");
+         }
++        uint128 reserveValidatorToken =
++            uint128(uint256(pool.reserveValidatorToken) + amountIn);
+ 
+         require(pool.reserveUserToken >= amountOut, "INVALID_AMOUNT");
+ 
+-        pool.reserveValidatorToken += uint128(amountIn);
++        _safeTransferFromExact(validatorToken, msg.sender, amountIn);
++
++        pool.reserveValidatorToken = reserveValidatorToken;
+         pool.reserveUserToken -= uint128(amountOut);
+ 
+-        IERC20(validatorToken).transferFrom(
+-            msg.sender,
+-            address(this),
+-            amountIn
+-        );
+-        IERC20(userToken).transfer(to, amountOut);
++        _safeTransfer(userToken, to, amountOut);
+ 
+         emit RebalanceSwap(
+             userToken,
+@@ -175,14 +252,19 @@ contract FeeAMM {
+         address validatorToken,
+         uint256 amountValidatorToken,
+         address to
+-    ) external returns (uint256 liquidity) {
++    ) external nonReentrant returns (uint256 liquidity) {
+         require(userToken != validatorToken, "IDENTICAL_ADDRESSES");
+         require(amountValidatorToken != 0, "INVALID_AMOUNT");
++        _requireU128(amountValidatorToken);
+ 
+         bytes32 poolId = getPoolId(userToken, validatorToken);
+ 
+         Pool storage pool = pools[poolId];
+         uint256 _totalSupply = totalSupply[poolId];
++        uint128 reserveValidatorToken = _checkedAddU128(
++            pool.reserveValidatorToken,
++            amountValidatorToken
++        );
+ 
+         if (pool.reserveUserToken == 0 && pool.reserveValidatorToken == 0) {
+             if (amountValidatorToken / 2 <= MIN_LIQUIDITY) {
+@@ -200,15 +282,9 @@ contract FeeAMM {
+             revert("INSUFFICIENT_LIQUIDITY");
+         }
+ 
+-        _requireU128(amountValidatorToken);
+-
+-        IERC20(validatorToken).transferFrom(
+-            msg.sender,
+-            address(this),
+-            amountValidatorToken
+-        );
++        _safeTransferFromExact(validatorToken, msg.sender, amountValidatorToken);
+ 
+-        pool.reserveValidatorToken += uint128(amountValidatorToken);
++        pool.reserveValidatorToken = reserveValidatorToken;
+ 
+         totalSupply[poolId] += liquidity;
+         liquidityBalances[poolId][to] += liquidity;
+@@ -228,7 +304,11 @@ contract FeeAMM {
+         address validatorToken,
+         uint256 liquidity,
+         address to
+-    ) external returns (uint256 amountUserToken, uint256 amountValidatorToken) {
++    )
++        external
++        nonReentrant
++        returns (uint256 amountUserToken, uint256 amountValidatorToken)
++    {
+         require(userToken != validatorToken, "IDENTICAL_ADDRESSES");
+         require(liquidity != 0, "INVALID_AMOUNT");
+ 
+@@ -249,14 +329,14 @@ contract FeeAMM {
+         _requireU128(amountUserToken);
+         _requireU128(amountValidatorToken);
+ 
+-        IERC20(userToken).transfer(to, amountUserToken);
+-        IERC20(validatorToken).transfer(to, amountValidatorToken);
+-
+         liquidityBalances[poolId][msg.sender] -= liquidity;
+         totalSupply[poolId] -= liquidity;
+         pool.reserveUserToken -= uint128(amountUserToken);
+         pool.reserveValidatorToken -= uint128(amountValidatorToken);
+ 
++        _safeTransfer(userToken, to, amountUserToken);
++        _safeTransfer(validatorToken, to, amountValidatorToken);
++
+         emit Burn(
+             msg.sender,
+             userToken,

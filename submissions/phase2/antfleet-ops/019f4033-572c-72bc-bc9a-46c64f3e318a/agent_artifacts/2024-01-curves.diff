@@ -1,0 +1,189 @@
+diff --git a/contracts/Curves.sol b/contracts/Curves.sol
+index 817c79b..5c5ee68 100644
+--- a/contracts/Curves.sol
++++ b/contracts/Curves.sol
+@@ -223,28 +223,29 @@ contract Curves is CurvesErrors, Security {
+         uint256 supply
+     ) internal {
+         (uint256 protocolFee, uint256 subjectFee, uint256 referralFee, uint256 holderFee, ) = getFees(price);
++        if (
++            !isBuy &&
++            holderFee > 0 &&
++            (address(feeRedistributor) == address(0) || feeRedistributor.totalSupply(curvesTokenSubject) == 0)
++        ) {
++            holderFee = 0;
++        }
+         {
+             bool referralDefined = referralFeeDestination[curvesTokenSubject] != address(0);
+             {
+                 address firstDestination = isBuy ? feesEconomics.protocolFeeDestination : msg.sender;
+                 uint256 buyValue = referralDefined ? protocolFee : protocolFee + referralFee;
+                 uint256 sellValue = price - protocolFee - subjectFee - referralFee - holderFee;
+-                (bool success1, ) = firstDestination.call{value: isBuy ? buyValue : sellValue}("");
+-                if (!success1) revert CannotSendFunds();
++                _sendFunds(firstDestination, isBuy ? buyValue : sellValue);
+             }
+             {
+-                (bool success2, ) = curvesTokenSubject.call{value: subjectFee}("");
+-                if (!success2) revert CannotSendFunds();
++                _sendFunds(curvesTokenSubject, subjectFee);
+             }
+             {
+-                (bool success3, ) = referralDefined
+-                    ? referralFeeDestination[curvesTokenSubject].call{value: referralFee}("")
+-                    : (true, bytes(""));
+-                if (!success3) revert CannotSendFunds();
++                if (referralDefined) _sendFunds(referralFeeDestination[curvesTokenSubject], referralFee);
+             }
+ 
+-            if (feesEconomics.holdersFeePercent > 0 && address(feeRedistributor) != address(0)) {
+-                feeRedistributor.onBalanceChange(curvesTokenSubject, msg.sender);
++            if (holderFee > 0 && address(feeRedistributor) != address(0)) {
+                 feeRedistributor.addFees{value: holderFee}(curvesTokenSubject);
+             }
+         }
+@@ -269,6 +270,7 @@ contract Curves is CurvesErrors, Security {
+ 
+         if (msg.value < price + totalFee) revert InsufficientPayment();
+ 
++        _notifyBalanceChange(curvesTokenSubject, msg.sender);
+         curvesTokenBalance[curvesTokenSubject][msg.sender] += amount;
+         curvesTokenSupply[curvesTokenSubject] = supply + amount;
+         _transferFees(curvesTokenSubject, true, price, amount, supply);
+@@ -286,6 +288,7 @@ contract Curves is CurvesErrors, Security {
+ 
+         uint256 price = getPrice(supply - amount, amount);
+ 
++        _notifyBalanceChange(curvesTokenSubject, msg.sender);
+         curvesTokenBalance[curvesTokenSubject][msg.sender] -= amount;
+         curvesTokenSupply[curvesTokenSubject] = supply - amount;
+ 
+@@ -313,6 +316,9 @@ contract Curves is CurvesErrors, Security {
+     function _transfer(address curvesTokenSubject, address from, address to, uint256 amount) internal {
+         if (amount > curvesTokenBalance[curvesTokenSubject][from]) revert InsufficientBalance();
+ 
++        _notifyBalanceChange(curvesTokenSubject, from);
++        _notifyBalanceChange(curvesTokenSubject, to);
++
+         // If transferring from oneself, skip adding to the list
+         if (from != to) {
+             _addOwnedCurvesTokenSubject(to, curvesTokenSubject);
+@@ -324,6 +330,22 @@ contract Curves is CurvesErrors, Security {
+         emit Transfer(curvesTokenSubject, from, to, amount);
+     }
+ 
++    function _sendFunds(address destination, uint256 amount) internal {
++        if (amount == 0) return;
++
++        (bool success, ) = destination.call{value: amount}("");
++        if (!success) revert CannotSendFunds();
++    }
++
++    function _notifyBalanceChange(address curvesTokenSubject, address account) internal {
++        if (
++            account != address(this) &&
++            address(feeRedistributor) != address(0)
++        ) {
++            feeRedistributor.onBalanceChange(curvesTokenSubject, account);
++        }
++    }
++
+     // Internal function to add a curvesTokenSubject to the list if not already present
+     function _addOwnedCurvesTokenSubject(address owner_, address curvesTokenSubject) internal {
+         address[] storage subjects = ownedCurvesTokenSubjects[owner_];
+diff --git a/contracts/FeeSplitter.sol b/contracts/FeeSplitter.sol
+index bb24f02..4b51fd2 100644
+--- a/contracts/FeeSplitter.sol
++++ b/contracts/FeeSplitter.sol
+@@ -13,6 +13,7 @@ contract FeeSplitter is Security {
+     // Custom errors
+     error NoFeesToClaim();
+     error NoTokenHolders();
++    error CannotSendFunds();
+ 
+     struct TokenData {
+         uint256 cumulativeFeePerToken;
+@@ -27,12 +28,13 @@ contract FeeSplitter is Security {
+ 
+     mapping(address => TokenData) internal tokensData;
+     mapping(address => address[]) internal userTokens;
++    mapping(address => mapping(address => bool)) internal userTokenSeen;
+ 
+     event FeesClaimed(address indexed token, address indexed user, uint256 amount);
+ 
+     constructor() Security() {}
+ 
+-    function setCurves(Curves curves_) public {
++    function setCurves(Curves curves_) public onlyOwner {
+         curves = curves_;
+     }
+ 
+@@ -66,8 +68,8 @@ contract FeeSplitter is Security {
+         if (balance > 0) {
+             uint256 owed = (data.cumulativeFeePerToken - data.userFeeOffset[account]) * balance;
+             data.unclaimedFees[account] += owed / PRECISION;
+-            data.userFeeOffset[account] = data.cumulativeFeePerToken;
+         }
++        data.userFeeOffset[account] = data.cumulativeFeePerToken;
+     }
+ 
+     function getClaimableFees(address token, address account) public view returns (uint256) {
+@@ -82,7 +84,8 @@ contract FeeSplitter is Security {
+         uint256 claimable = getClaimableFees(token, msg.sender);
+         if (claimable == 0) revert NoFeesToClaim();
+         tokensData[token].unclaimedFees[msg.sender] = 0;
+-        payable(msg.sender).transfer(claimable);
++        (bool success, ) = msg.sender.call{value: claimable}("");
++        if (!success) revert CannotSendFunds();
+         emit FeesClaimed(token, msg.sender, claimable);
+     }
+ 
+@@ -95,8 +98,14 @@ contract FeeSplitter is Security {
+ 
+     function onBalanceChange(address token, address account) public onlyManager {
+         TokenData storage data = tokensData[token];
+-        data.userFeeOffset[account] = data.cumulativeFeePerToken;
+-        if (balanceOf(token, account) > 0) userTokens[account].push(token);
++        if (!userTokenSeen[account][token]) {
++            userTokenSeen[account][token] = true;
++            userTokens[account].push(token);
++            data.userFeeOffset[account] = data.cumulativeFeePerToken;
++            return;
++        }
++
++        updateFeeCredit(token, account);
+     }
+ 
+     //@dev: this may fail if the the list is long. Get first the list with getUserTokens to estimate and prepare the batch
+@@ -113,7 +122,8 @@ contract FeeSplitter is Security {
+             }
+         }
+         if (totalClaimable == 0) revert NoFeesToClaim();
+-        payable(msg.sender).transfer(totalClaimable);
++        (bool success, ) = msg.sender.call{value: totalClaimable}("");
++        if (!success) revert CannotSendFunds();
+     }
+ 
+     receive() external payable {}
+diff --git a/contracts/Security.sol b/contracts/Security.sol
+index b1dfee5..f5ed159 100644
+--- a/contracts/Security.sol
++++ b/contracts/Security.sol
+@@ -5,13 +5,15 @@ contract Security {
+     address public owner;
+     mapping(address => bool) public managers;
+ 
++    error Unauthorized();
++
+     modifier onlyOwner() {
+-        msg.sender == owner;
++        if (msg.sender != owner) revert Unauthorized();
+         _;
+     }
+ 
+     modifier onlyManager() {
+-        managers[msg.sender] == true;
++        if (!managers[msg.sender]) revert Unauthorized();
+         _;
+     }
+ 
