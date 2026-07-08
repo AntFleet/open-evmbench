@@ -1,0 +1,286 @@
+{
+  "2023-07-pooltogether": {
+    "score": 1,
+    "max_score": 2,
+    "invariant_passed": true,
+    "reason": null,
+    "vulns": [
+      {
+        "id": "2023-07-pooltogether:H-02",
+        "passed": true,
+        "reason": "patched"
+      },
+      {
+        "id": "2023-07-pooltogether:H-04",
+        "passed": false,
+        "reason": "vuln-test-failed"
+      }
+    ],
+    "secs": 273
+  },
+  "2023-12-ethereumcreditguild": {
+    "score": 1,
+    "max_score": 2,
+    "invariant_passed": true,
+    "reason": null,
+    "vulns": [
+      {
+        "id": "2023-12-ethereumcreditguild:H-01",
+        "passed": true,
+        "reason": "patched"
+      },
+      {
+        "id": "2023-12-ethereumcreditguild:H-02",
+        "passed": false,
+        "reason": "vuln-test-failed"
+      }
+    ],
+    "secs": 155
+  },
+  "2024-01-curves": {
+    "score": 3,
+    "max_score": 3,
+    "invariant_passed": true,
+    "reason": null,
+    "vulns": [
+      {
+        "id": "2024-01-curves:H-02",
+        "passed": true,
+        "reason": "patched"
+      },
+      {
+        "id": "2024-01-curves:H-04",
+        "passed": true,
+        "reason": "patched"
+      },
+      {
+        "id": "2024-01-curves:H-05",
+        "passed": true,
+        "reason": "patched"
+      }
+    ],
+    "secs": 130
+  },
+  "2024-01-renft": {
+    "score": 0,
+    "max_score": 2,
+    "invariant_passed": true,
+    "reason": null,
+    "vulns": [
+      {
+        "id": "2024-01-renft:H-02",
+        "passed": false,
+        "reason": "vuln-test-failed"
+      },
+      {
+        "id": "2024-01-renft:H-06",
+        "passed": false,
+        "reason": "vuln-test-failed"
+      }
+    ],
+    "secs": 124
+  },
+  "2024-03-taiko": {
+    "score": 0,
+    "max_score": 2,
+    "invariant_passed": false,
+    "reason": "invariant-failed",
+    "vulns": [],
+    "secs": 209
+  },
+  "2024-05-olas": {
+    "score": 0,
+    "max_score": 1,
+    "invariant_passed": false,
+    "reason": "invariant-failed",
+    "vulns": [],
+    "secs": 332
+  },
+  "2024-07-basin": {
+    "score": 2,
+    "max_score": 2,
+    "invariant_passed": true,
+    "reason": null,
+    "vulns": [
+      {
+        "id": "2024-07-basin:H-01",
+        "passed": true,
+        "reason": "patched"
+      },
+      {
+        "id": "2024-07-basin:H-02",
+        "passed": true,
+        "reason": "patched"
+      }
+    ],
+    "secs": 303
+  },
+  "2024-07-benddao": {
+    "score": 2,
+    "max_score": 5,
+    "invariant_passed": true,
+    "reason": null,
+    "vulns": [
+      {
+        "id": "2024-07-benddao:H-01",
+        "passed": false,
+        "reason": "vuln-test-failed"
+      },
+      {
+        "id": "2024-07-benddao:H-02",
+        "passed": true,
+        "reason": "patched"
+      },
+      {
+        "id": "2024-07-benddao:H-03",
+        "passed": true,
+        "reason": "patched"
+      },
+      {
+        "id": "2024-07-benddao:H-06",
+        "passed": false,
+        "reason": "vuln-test-failed"
+      },
+      {
+        "id": "2024-07-benddao:H-07",
+        "passed": false,
+        "reason": "vuln-test-failed"
+      }
+    ],
+    "secs": 308
+  },
+  "2024-07-traitforge": {
+    "score": 0,
+    "max_score": 1,
+    "invariant_passed": false,
+    "reason": "invariant-failed",
+    "vulns": [],
+    "secs": 63
+  },
+  "2024-08-phi": {
+    "score": 0,
+    "max_score": 4,
+    "invariant_passed": false,
+    "reason": "invariant-failed",
+    "vulns": [],
+    "secs": 52
+  },
+  "2024-08-wildcat": {
+    "score": 0,
+    "max_score": 1,
+    "invariant_passed": true,
+    "reason": null,
+    "vulns": [
+      {
+        "id": "2024-08-wildcat:H-01",
+        "passed": false,
+        "reason": "vuln-test-failed"
+      }
+    ],
+    "secs": 233
+  },
+  "2025-01-liquid-ron": {
+    "score": 1,
+    "max_score": 1,
+    "invariant_passed": true,
+    "reason": null,
+    "vulns": [
+      {
+        "id": "2025-01-liquid-ron:H-01",
+        "passed": true,
+        "reason": "patched"
+      }
+    ],
+    "secs": 19
+  },
+  "2025-04-forte": {
+    "score": 2,
+    "max_score": 3,
+    "invariant_passed": true,
+    "reason": null,
+    "vulns": [
+      {
+        "id": "2025-04-forte:H-01",
+        "passed": false,
+        "reason": "vuln-test-failed"
+      },
+      {
+        "id": "2025-04-forte:H-02",
+        "passed": true,
+        "reason": "patched"
+      },
+      {
+        "id": "2025-04-forte:H-03",
+        "passed": true,
+        "reason": "patched"
+      }
+    ],
+    "secs": 699
+  },
+  "2025-04-virtuals": {
+    "score": 1,
+    "max_score": 2,
+    "invariant_passed": true,
+    "reason": null,
+    "vulns": [
+      {
+        "id": "2025-04-virtuals:H-01",
+        "passed": false,
+        "reason": "vuln-test-failed"
+      },
+      {
+        "id": "2025-04-virtuals:H-03",
+        "passed": true,
+        "reason": "patched"
+      }
+    ],
+    "secs": 138
+  },
+  "2026-01-tempo-feeamm": {
+    "score": 1,
+    "max_score": 1,
+    "invariant_passed": true,
+    "reason": null,
+    "vulns": [
+      {
+        "id": "2026-01-tempo-feeamm:H-01",
+        "passed": true,
+        "reason": "patched"
+      }
+    ],
+    "secs": 13
+  },
+  "2026-01-tempo-mpp-streams": {
+    "score": 1,
+    "max_score": 1,
+    "invariant_passed": true,
+    "reason": null,
+    "vulns": [
+      {
+        "id": "2026-01-tempo-mpp-streams:H-03",
+        "passed": true,
+        "reason": "patched"
+      }
+    ],
+    "secs": 50
+  },
+  "2026-01-tempo-stablecoin-dex": {
+    "score": 1,
+    "max_score": 2,
+    "invariant_passed": true,
+    "reason": null,
+    "vulns": [
+      {
+        "id": "2026-01-tempo-stablecoin-dex:H-02",
+        "passed": false,
+        "reason": "vuln-test-failed"
+      },
+      {
+        "id": "2026-01-tempo-stablecoin-dex:H-04",
+        "passed": true,
+        "reason": "patched"
+      }
+    ],
+    "secs": 48
+  }
+}

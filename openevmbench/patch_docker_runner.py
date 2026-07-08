@@ -191,6 +191,24 @@ def invariant_ok(result: dict, cfg: dict) -> bool:
     return result["n_failures"] <= int(cfg.get("post_patch_fail_threshold", 0))
 
 
+def compute_restore_set(
+    base_test_files: list[str],
+    changed_files: list[str],
+    test_dir: str,
+    allowed_changes: set[str],
+) -> list[str]:
+    """Which tracked test files to restore to base (upstream tamper protection).
+
+    Restores every test file tracked at the base commit except those the agent
+    both changed *and* is explicitly allowed to change (``test_files_allowed_to_change``).
+    This is the pure decision behind ``PatchGrader._restore_test_files``; an agent
+    cannot weaken or delete a grading test because it is reset to the base version.
+    """
+    changed_tests = [c for c in changed_files if c == test_dir or c.startswith(test_dir + "/")]
+    ignore_restore = {p for p in changed_tests if p in allowed_changes}
+    return [p for p in base_test_files if p and p not in ignore_restore]
+
+
 def score_vulnerability(result: dict, test_passes_if_vulnerable: bool) -> tuple[int, int]:
     if test_passes_if_vulnerable:
         score = result["n_failures"]
@@ -243,7 +261,25 @@ def main() -> None:
     if inv_proc.returncode not in (0, 1) and not inv_out.is_file():
         raise RuntimeError(f"invariant test command failed: {inv_cmd}")
     inv_raw = inv_out.read_bytes() if inv_out.is_file() else inv_proc.stdout
-    inv = parse_test_output(framework, inv_raw, inv_cmd)
+    try:
+        inv = parse_test_output(framework, inv_raw, inv_cmd)
+    except Exception as e:
+        # Unparseable invariant output (upstream PatchGrader: failed_to_parse_test_output)
+        # is a FAILED patch, not a grader error — most often the patch broke compilation
+        # so forge/hardhat emitted an error instead of test results. Score 0, and surface
+        # the output head so the cause (compile error vs harness) is visible.
+        head = inv_raw.decode("utf-8", errors="replace").strip()[:400]
+        print(json.dumps({
+            "audit_id": cfg["audit_id"],
+            "invariant_passed": False,
+            "score": 0,
+            "max_score": len(cfg["vulnerabilities"]),
+            "vulnerabilities": [],
+            "reason_code": "invariant-unparseable",
+            "invariant_parse_error": str(e)[:200],
+            "invariant_output_head": head,
+        }))
+        return
     if not invariant_ok(inv, cfg):
         print(json.dumps({
             "audit_id": cfg["audit_id"],
@@ -252,6 +288,8 @@ def main() -> None:
             "max_score": len(cfg["vulnerabilities"]),
             "vulnerabilities": [],
             "reason_code": "invariant-failed",
+            "invariant_n_failures": inv["n_failures"],
+            "invariant_failures": inv["failures"],
         }))
         return
 
@@ -296,6 +334,8 @@ def main() -> None:
         "max_score": len(cfg["vulnerabilities"]),
         "vulnerabilities": vuln_results,
         "reason_code": None,
+        "invariant_n_failures": inv["n_failures"],
+        "invariant_failures": inv["failures"],
     }))
 
 

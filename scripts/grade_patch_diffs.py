@@ -65,6 +65,8 @@ def main() -> int:
                           for v in g.vulnerabilities],
                 "secs": round(time.monotonic() - started),
             }
+            if g.invariant_output_head:  # evidence when the patch broke the build
+                results[aid]["invariant_output_head"] = g.invariant_output_head
             print(f"[{i}/22] {aid}: {g.score}/{g.max_score}  inv={g.invariant_passed}  ({results[aid]['secs']}s)", flush=True)
         except PatchWorkerError as e:
             results[aid] = {"score": 0, "max_score": len(audit.vulnerabilities),

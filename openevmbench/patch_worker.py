@@ -53,6 +53,9 @@ class AuditGrade:
     vulnerabilities: list[VulnerabilityGrade]
     reason_code: str | None = None
     grader_log: str = ""
+    invariant_n_failures: int = 0
+    invariant_failures: tuple[str, ...] = ()
+    invariant_output_head: str = ""
 
 
 def _evmbench_root(upstream_repo_dir: Path) -> Path:
