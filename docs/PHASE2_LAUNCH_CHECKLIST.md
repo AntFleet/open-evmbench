@@ -88,7 +88,8 @@ Requires per-audit Docker images + **pinned Foundry nightly** (see spike notes).
 | `[x]` | `validate_phase2_patch()` | [validation.py](../openevmbench/validation.py) + tests |
 | `[x]` | `openevmbench run --mode patch --docker` packages record + artifacts | Docker grading path |
 | `[x]` | `check_package()` patch path + CI Docker re-grade | `OPENEVMBENCH_SKIP_PATCH_REGRADE` escape hatch |
-| `[ ]` | Unit tests: gold pass, bad diff fail, test-tamper fail | |
+| `[x]` | Unit tests: gold pass, bad diff fail, test-tamper fail | [test_patch_gameability.py](../tests/test_patch_gameability.py) — scoring/tamper/guard invariants |
+| `[x]` | **Gameability probe** — degenerate patches (empty/noop/brick) score 0; gold scores full | [patch_gameability_probe.py](../scripts/patch_gameability_probe.py) + [PHASE2_GAMEABILITY.md](PHASE2_GAMEABILITY.md). 42/44 degenerate-proof; `2025-04-virtuals` (2 vulns) wide-guard, **disclosed** (board_config) |
 
 ### Spike findings (`2023-07-pooltogether`, 2026-06-21)
 
@@ -121,11 +122,11 @@ Requires per-audit Docker images + **pinned Foundry nightly** (see spike notes).
 
 | Status | Gate | Owner / link |
 |--------|------|--------------|
-| `[ ]` | Patch preflight script (Docker images, 1-audit smoke, 44-vuln ID check) | [scripts/patch_preflight.py](../scripts/patch_preflight.py) + [patch-reference.yml](../.github/workflows/patch-reference.yml) |
-| `[ ]` | AntFleet Patch reference run → `submissions/phase2/antfleet-ops/...` | |
-| `[ ]` | `check-pr` + acceptance signing + promote | |
-| `[ ]` | Reference row `prize-excluded` (already in board config handles) | |
-| `[ ]` | Positioning copy vs 41.5% SOTA | |
+| `[x]` | Patch preflight script (Docker images, 1-audit smoke, 44-vuln ID check) | [scripts/patch_preflight.py](../scripts/patch_preflight.py) + [patch-reference.yml](../.github/workflows/patch-reference.yml) |
+| `[x]` | AntFleet Patch reference run → `submissions/phase2/antfleet-ops/...` | **GPT-5.5 43/44 = 97.7%** promoted 2026-06-24 (PRs #70/#71/#72); Composer 2.5 (#68) closed on transient forte grade-error, unblocked by #69 |
+| `[x]` | `check-pr` + acceptance signing + promote | GPT-5.5 record `state=promoted`, signed |
+| `[x]` | Reference row `prize-excluded` (already in board config handles) | `antfleet-ops` in `prize_excluded_operators` |
+| `[~]` | Positioning copy vs 41.5% SOTA | Reference is 2.35× SOTA; gameability doc pre-empts "too easy" (42/44 degenerate-proof, virtuals disclosed) |
 | `[ ]` | @AntFleetDev announce | |
 
 ---
@@ -137,7 +138,7 @@ Requires per-audit Docker images + **pinned Foundry nightly** (see spike notes).
 3. `[x]` Phase 2 PR pipeline operational (`submissions/phase2/` path + checks)
 4. `[x]` Patch board renders with GPT-5.3-Codex 41.5% reference target
 5. `[x]` Submitter documentation complete
-6. `[ ]` AntFleet Patch reference row promoted (recommended seed)
+6. `[x]` AntFleet Patch reference row promoted (GPT-5.5 43/44, signed + promoted 2026-06-24). Composer 2.5 attempt-history row optional (needs grade-only re-run with #69 fix).
 
 ---
 

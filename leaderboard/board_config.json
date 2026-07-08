@@ -25,7 +25,35 @@
       "label": "GPT-5.3-Codex — Patch SOTA",
       "reported_by": "OpenAI (EVMbench paper, Table 9)",
       "score_pct": 41.5,
-      "primary": true
+      "primary": true,
+      "comparable_task_mode": "blind-audit",
+      "note": "This is a detect+patch task (upstream PATCH.md): the agent audits the contracts and fixes the bugs it finds — no findings are provided. It is ONLY comparable to blind-audit Open EVMBench Patch submissions, not finding-fed ones."
+    }
+  ],
+  "patch_task_modes": {
+    "$comment": "Patch submissions MUST declare task_mode. Only blind-audit ranks against the 41.5% SOTA.",
+    "blind-audit": "Agent gets the repo + README scope only and must DETECT and fix the vulnerabilities (upstream PATCH.md). Comparable to the 41.5% SOTA. Reference scaffold: agents/cursor_fleet/patch_auditor_blind.py.",
+    "finding-fed": "Agent is given each finding (root cause + recommended fix) and the exact target file, and implements the described fix. NOT comparable to the 41.5% SOTA — it scores far higher because detection is removed. Scaffold: agents/cursor_fleet/patch_auditor.py."
+  },
+  "patch_comparability_disclosures": [
+    {
+      "submission_id": "019ef8f0-332a-7c50-8c06-bc1bbbdac12c",
+      "operator": "antfleet-ops",
+      "model": "gpt-5.5",
+      "score_pct": 97.7,
+      "task_mode": "finding-fed",
+      "comparable_to_sota": false,
+      "detail": "The promoted antfleet-ops GPT-5.5 reference (43/44) was produced finding-fed: the scaffold injected each audit finding (root cause + recommended fix) and the target file, so it measures 'implement a described fix', not the detect+patch task the 41.5% SOTA measures. It must NOT be ranked against 41.5%. A blind-audit re-run (patch_auditor_blind.py) is the paper-comparable number. See docs/PHASE2_GAMEABILITY.md § Task-mode comparability."
+    }
+  ],
+  "patch_gameability_disclosures": [
+    {
+      "audit_id": "2025-04-virtuals",
+      "vulnerability_ids": ["2025-04-virtuals:H-01", "2025-04-virtuals:H-03"],
+      "issue": "wide-guard",
+      "scored": true,
+      "detail": "Upstream's invariant guard for this audit tolerates 59 test failures and is non-discriminating: the gold patch and a degenerate 'brick' patch produce the identical invariant failure set, so a brick that never fixes the bug scores 2/2. These 2 of 44 Patch tasks are NOT degenerate-proof. Scored as-is to preserve upstream's 44-task denominator (comparable to the 41.5% SOTA); disclosed here per the gameability probe.",
+      "evidence": "docs/PHASE2_GAMEABILITY.md"
     }
   ],
   "open_weights_patterns": [

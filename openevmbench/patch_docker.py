@@ -220,6 +220,9 @@ def _parse_container_grade(raw: dict[str, Any], audit: PatchAudit) -> AuditGrade
             vulnerabilities=[],
             reason_code=raw.get("reason_code", "invariant-failed"),
             grader_log=f"[{audit.audit_id}] docker invariant failed",
+            invariant_n_failures=int(raw.get("invariant_n_failures", 0)),
+            invariant_failures=tuple(raw.get("invariant_failures") or []),
+            invariant_output_head=str(raw.get("invariant_output_head", "")),
         )
     vuln_grades = [
         VulnerabilityGrade(
@@ -242,6 +245,8 @@ def _parse_container_grade(raw: dict[str, Any], audit: PatchAudit) -> AuditGrade
         invariant_passed=True,
         vulnerabilities=vuln_grades,
         grader_log=f"[{audit.audit_id}] docker grade {score}/{max_score}",
+        invariant_n_failures=int(raw.get("invariant_n_failures", 0)),
+        invariant_failures=tuple(raw.get("invariant_failures") or []),
     )
 
 

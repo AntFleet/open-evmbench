@@ -1,3 +1,6 @@
+# Phase 2 patch audit source checkouts (large, fetched on demand)
+audit_sources_patch/
+
 # Python
 __pycache__/
 *.py[cod]

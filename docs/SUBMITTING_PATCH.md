@@ -118,3 +118,21 @@ openevmbench verify --record submissions/phase2/<handle>/<id>/record.json
 ```
 
 Same Ed25519 acceptance signature recipe as Phase 1 ([SPEC §4](SPEC.md)).
+
+## Board integrity notes
+
+**Task mode (comparability).** The 41.5% Patch SOTA is a **detect+patch** task —
+the agent audits the contracts and fixes the bugs it *finds*, with no findings
+provided (upstream `PATCH.md`). A submission is only comparable to 41.5% if it runs
+the same way. Use the **blind-audit** scaffold
+([`agents/cursor_fleet/patch_auditor_blind.py`](../agents/cursor_fleet/patch_auditor_blind.py))
+for a paper-comparable run, and declare `task_mode: blind-audit`. A **finding-fed**
+run (the agent is handed each finding's root cause + fix + target file) measures
+"implement a described fix", scores far higher, and does **not** rank against 41.5%.
+See [PHASE2_GAMEABILITY.md](PHASE2_GAMEABILITY.md) § Task-mode comparability.
+
+**Degenerate-proof.** Grading rejects patches that brick/disable the contract
+instead of fixing the bug for **42 of the 44 tasks**. The exception is
+`2025-04-virtuals` (2 vulns), whose upstream invariant guard is non-discriminating;
+scored as-is but publicly disclosed. Full analysis + reproducible probe:
+[PHASE2_GAMEABILITY.md](PHASE2_GAMEABILITY.md).
